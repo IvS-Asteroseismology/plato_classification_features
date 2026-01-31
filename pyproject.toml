@@ -1,0 +1,19 @@
+[project]
+name = "plato-classification-features"
+version = "0.1.0"
+description = "A simple library to compute features from single-band astronomical time series"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "astropy>=7.2.0",
+    "joblib>=1.5.3",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "nifty-ls>=1.1.0",
+    "numpy>=2.3.5",
+    "polars>=1.37.1",
+    "pyarrow>=23.0.0",
+    "scipy>=1.17.0",
+    "tqdm>=4.67.2",
+]
+
