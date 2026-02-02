@@ -10,8 +10,14 @@ Install with
 uv sync
 ```
 
-Run with
+Feature extraction in training set
 
 ```bash
-uv run src/feature_extractor.py
+uv run src/runner.py training path_to_training_parquet results --n_jobs=8
+```
+
+Feature extraction in inferenec set
+
+```bash
+uv run src/runner.py inferenceg path_to_directory_with_parquets results --n_jobs=8
 ```
