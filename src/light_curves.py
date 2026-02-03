@@ -4,18 +4,30 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 
-def read_fits_lc(path: Path | str, hdu: int = 1, flux_col: str = "cal_aper_flux", apply_masks: bool = True) -> tuple[np.ndarray, np.ndarray]:
+def read_fits_lc(
+        path: Path | str, 
+        hdu_index: int = 1, 
+        flux_column: str = "cal_aper_flux", 
+        apply_quality_masks: bool = True, 
+        min_non_nan_points: int = 10, 
+        return_preprocessed: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
     with fitsio.FITS(path) as f:
-        data = f[hdu]
-        time = data.read_column("time").astype('float64')
-        flux = data.read_column(flux_col).astype('float64')
-        if apply_masks:
-            tess_flags = data.read_column('TESS_flags')
-            tglc_flags = data.read_column('TGLC_flags')
-            mask_good = np.logical_and(tess_flags == 0, tglc_flags == 0)
-            time = time[mask_good]
-            flux = flux[mask_good]
-    time, flux = preprocess_light_curve(time, flux, sigma_threshold=10, detrend_sigma=100)
+        hdu_data = f[hdu_index]
+        time = hdu_data.read_column("time").astype('float64')
+        flux = hdu_data.read_column(flux_column).astype('float64')
+        if apply_quality_masks:
+            tess_flags = hdu_data.read_column('TESS_flags')
+            tglc_flags = hdu_data.read_column('TGLC_flags')
+    if apply_quality_masks:
+        good_quality_mask = np.logical_and(tess_flags == 0, tglc_flags == 0)
+        time = time[good_quality_mask]
+        flux = flux[good_quality_mask]
+    mask = ~np.isnan(flux)
+    if np.sum(mask) < min_non_nan_points:
+        raise ValueError("A light curve contains too many NaN values.")
+    if return_preprocessed:
+        time, flux = preprocess_light_curve(time, flux, sigma_threshold=10, detrend_sigma=100)
     return time, flux
 
 def smooth_time_series(time_series: np.ndarray, sigma: float) -> np.ndarray:
@@ -25,7 +37,7 @@ def smooth_time_series(time_series: np.ndarray, sigma: float) -> np.ndarray:
     smoothed_series = gaussian_filter1d(time_series, sigma=sigma, mode='nearest')
     return smoothed_series
 
-
+"""
 def apply_quality_mask(time: np.ndarray, flux: np.ndarray, quality_mask: np.ndarray, nan_threshold: int = 10) -> tuple[np.ndarray, np.ndarray]:
     '''
     A helper function to apply a quality mask, remove NaN values, and check for sufficient data.
@@ -38,6 +50,7 @@ def apply_quality_mask(time: np.ndarray, flux: np.ndarray, quality_mask: np.ndar
     if np.sum(mask) < nan_threshold:
         raise ValueError("A light curve contains too many NaN values.")
     return time[mask], flux[mask]
+"""
 
 def remove_outliers(time: np.ndarray, flux: np.ndarray, sigma_threshold: float) -> tuple[np.ndarray, np.ndarray]:
     '''
@@ -53,8 +66,8 @@ def preprocess_light_curve(time, flux, sigma_threshold, detrend_sigma):
     A helper function to processes the light curve by detrending with a Gaussian filter.
     '''
     time, flux = remove_outliers(time, flux, sigma_threshold)
-    #if time is None or flux is None:
-    #    raise ValueError(f"The light curve {file} is empty or invalid.")
+    if len(flux) == 0:
+        raise ValueError("Light curve is empty after removing outliers.")
     smoothed = smooth_time_series(flux, sigma=detrend_sigma)
     detrended_flux = flux[:len(smoothed)] - smoothed
     detrended_time = time[:len(detrended_flux)]
