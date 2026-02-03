@@ -8,23 +8,18 @@ import pyarrow.parquet as pq
 from feature_extractors import extract_features_parallel
 from eta_estimator import ETAEstimator
 
-def iter_parquet_column(
-    parquet_path: str | Path,
-    *,
-    batch_rows: int,
-    col: str = "FilePath",
-) -> Iterator[list[str]]:
-    pf = pq.ParquetFile(str(parquet_path))
+def iter_parquet_column(parquet_path: Path | str, *, batch_rows: int, col: str = "FilePath") -> Iterator[list[str]]:
+    pf = pq.ParquetFile(parquet_path)
     for batch in pf.iter_batches(columns=[col], batch_size=batch_rows):
         yield batch.column(0).to_pylist()
 
 def parquet_num_rows(parquet_path: str | Path) -> int:
-    pf = pq.ParquetFile(str(parquet_path))
+    pf = pq.ParquetFile(parquet_path)
     return pf.metadata.num_rows
 
-def write_parquet_part(rows: list[dict[str, Any]], out_path: str | Path) -> None:
+def write_parquet_part(rows: list[dict[str, Any]], out_path: Path) -> None:
     table = pa.Table.from_pylist(rows)
-    pq.write_table(table, str(out_path))
+    pq.write_table(table, out_path)
 
 def process_parquet(
         parquet_path: Path,
@@ -34,7 +29,8 @@ def process_parquet(
         joblib_backend: str, 
         batch_rows: int = 50_000, 
         worker_batch: int = 1000, 
-        log_every_batches: int = 5
+        log_every_batches: int = 5,
+        verbose: bool = False,
 ) -> None:
     if not parquet_path.exists():
         raise FileNotFoundError(f"No parquet found under {parquet_path}")
@@ -54,6 +50,13 @@ def process_parquet(
             backend=joblib_backend,
             worker_batch_size=worker_batch,
         )
+        failed = [row for row in rows if '_error' in row]
+        if verbose:
+            for row in failed:
+                log.error(f"Failed: {row['path']} | {row['_error']}")
+        if len(failed) > 0:
+            log.error(f"Batch {part_id}: {len(failed)}/{len(rows)} files failed")
+        rows = [row for row in rows if '_error' not in row]
         write_parquet_part(rows, out_path)
         eta.update(len(batch))
         if (part_id + 1) % log_every_batches == 0:
@@ -76,7 +79,6 @@ def process_many_parquets(parquet_dir: Path, save_dir: Path, n_jobs: int, overwr
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        prog="compute_lightcurve_features",
         description="Compute time/frequency-domain features for FITS light curves.",
     )
     p.add_argument("mode", choices=("training", "inference"), help="Whether to run on the training set or inference set.")

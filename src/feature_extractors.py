@@ -15,7 +15,7 @@ class FeatureExtractorConfig:
     peaks_to_finetune: int = 10
     n_harmonics: int = 4
 
-feature_types = float | str | Path
+feature_types = float | str
 
 def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorConfig()) -> dict[str, feature_types]:
     # NOTE: This assumes that time and flux have already been sanitized
@@ -31,9 +31,22 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     return {**td, **pg, **fs}
 
 def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
-    t, f = read_fits_lc(path)
+    if isinstance(path, str):
+        path = Path(path)
+    try:
+        file_stats = path.stat()
+    except FileNotFoundError:
+        return {"path": str(path), "_error": "missing"}
+    except OSError as e:
+        return {"path": str(path), "_error": f"oserror: {e}"}
+    if file_stats.st_size == 0:
+        return {"path": str(path), "_error": "empty (0 bytes)"}
+    try:
+        t, f = read_fits_lc(path)
+    except:
+        return {"path": str(path), "_error": "parsing error"}
     feats = extract_features(t, f)
-    feats["path"] = path
+    feats["path"] = str(path)
     return feats
 
 def iter_batches(seq: list[Any], batch_size: int) -> Iterator[list[Any]]:
