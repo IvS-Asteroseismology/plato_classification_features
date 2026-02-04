@@ -13,6 +13,8 @@ def read_fits_lc(
         return_preprocessed: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     with fitsio.FITS(path) as f:
+        header = f[0].read_header()
+        sector = header['SECTOR'] if 'SECTOR' in header else None
         hdu_data = f[hdu_index]
         time = hdu_data.read_column("time").astype('float64')
         flux = hdu_data.read_column(flux_column).astype('float64')
@@ -26,6 +28,10 @@ def read_fits_lc(
     mask = ~np.isnan(flux)
     if np.sum(mask) < min_non_nan_points:
         raise ValueError("A light curve contains too many NaN values.")
+    if sector is not None and sector >= 27 and len(flux) >= 3:
+       n = (len(flux) // 3) * 3
+       time = time[:n].reshape(-1, 3).mean(axis=1)
+       flux = flux[:n].reshape(-1, 3).mean(axis=1)
     if return_preprocessed:
         time, flux = preprocess_light_curve(time, flux, sigma_threshold=10, detrend_sigma=100)
     return time, flux
