@@ -18,12 +18,16 @@ def find_top_k_peaks(x: np.ndarray, k: int) -> np.ndarray:
     idx = np.argsort(x[1:-1][local_maxima])[::-1][:k]
     return np.arange(1, len(x)-1)[local_maxima][idx]
 
-def periodogram_features(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10., peaks_to_finetune: int = 0) -> dict[str, float]:
+def compute_lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10.0) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
     delta_time = np.median(time[1:] - time[:-1])
     time_span = time[-1] - time[0]
     fmin, fmax, fres = 1/time_span, 0.5/delta_time, 1/(oversampling_factor * time_span)
     freqs = frequency_grid(fmin, fmax, fres)
     ampl = lombscargle_periodogram(time, flux, fmin, fmax, fres)
+    return freqs, ampl, (fmin, fmax, fres)
+
+def periodogram_features(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10., peaks_to_finetune: int = 0) -> dict[str, float]:
+    freqs, ampl, (fmin, fmax, fres) = compute_lombscargle_periodogram(time, flux, oversampling_factor=oversampling_factor)
     if peaks_to_finetune>0:
         peak_idx = find_top_k_peaks(ampl, k=peaks_to_finetune)
         fres_ft = fres / 10.0  # 10 times finer than coarse grid
