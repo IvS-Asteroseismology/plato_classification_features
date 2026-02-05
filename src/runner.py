@@ -100,7 +100,7 @@ if __name__ == "__main__":
         case 'inference':
             process_many_parquets(args.input, args.output, args.n_jobs, args.overwrite, args.backend)
         case 'training':
-            process_parquet(args.input, args.output / 'training_set', args.n_jobs, args.overwrite, args.backend)
+            process_parquet(args.input, args.output / 'training_set', args.n_jobs, args.overwrite, args.backend, worker_batch=100)
         case '_':
             raise ValueError('Invalid mode')
 
