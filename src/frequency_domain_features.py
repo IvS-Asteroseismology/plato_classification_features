@@ -69,7 +69,7 @@ def fit_fourier_series(time: np.ndarray, flux: np.ndarray, fundamental_frequency
 def wrap_to_pi(angle: np.ndarray) -> np.ndarray:
     return (angle + np.pi) % (2*np.pi) - np.pi
 
-def fourier_series_features(time, flux, fundamental_frequency: float, num_components: int = 4, adjust_with_harmonic_ratio: bool = False) -> dict[str, float]:
+def fourier_series_features(time, flux, fundamental_frequency: float, num_components: int = 4, adjust_with_harmonic_ratio: bool = True) -> dict[str, float]:
     _, amplitudes, phases, sum_squared_residuals = fit_fourier_series(time, flux, fundamental_frequency, num_components)
     # First phase will be reference
     if adjust_with_harmonic_ratio: # As in Debosscher et al. 2007
