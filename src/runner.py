@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 from typing import Iterator, Any
 import argparse
@@ -8,7 +9,7 @@ import pyarrow.parquet as pq
 from feature_extractors import extract_features_parallel
 from eta_estimator import ETAEstimator
 
-def iter_parquet_column(parquet_path: Path | str, *, batch_rows: int, col: str = "FilePath") -> Iterator[list[str]]:
+def iter_parquet_column(parquet_path: Path | str, *, batch_rows: int, col: str) -> Iterator[list[str]]:
     pf = pq.ParquetFile(parquet_path)
     for batch in pf.iter_batches(columns=[col], batch_size=batch_rows):
         yield batch.column(0).to_pylist()
@@ -31,6 +32,7 @@ def process_parquet(
         worker_batch: int = 1000, 
         log_every_batches: int = 5,
         verbose: bool = False,
+        path_column_name: str = 'FilePath',
 ) -> None:
     if not parquet_path.exists():
         raise FileNotFoundError(f"No parquet found under {parquet_path}")
@@ -39,7 +41,7 @@ def process_parquet(
     log.info(f"Parquet {parquet_path.stem}: {total_rows} paths")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows)):
+    for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows, col=path_column_name)):
         out_path = save_dir / f"part-{part_id:06d}.parquet"
         if out_path.exists() and not overwrite:
             eta.update(len(batch))
@@ -56,6 +58,10 @@ def process_parquet(
                 log.error(f"Failed: {row['path']} | {row['_error']}")
         if len(failed) > 0:
             log.error(f"Batch {part_id}: {len(failed)}/{len(rows)} files failed")
+            errors = [row['_error'] for row in failed]
+            cerrors = Counter(errors)
+            for reason, count in cerrors.items():
+                log.error(f"\t {reason}: {count}")
         rows = [row for row in rows if '_error' not in row]
         write_parquet_part(rows, out_path)
         eta.update(len(batch))
@@ -100,7 +106,7 @@ if __name__ == "__main__":
         case 'inference':
             process_many_parquets(args.input, args.output, args.n_jobs, args.overwrite, args.backend)
         case 'training':
-            process_parquet(args.input, args.output / 'training_set', args.n_jobs, args.overwrite, args.backend, worker_batch=100)
+            process_parquet(args.input, args.output / 'training_set', args.n_jobs, args.overwrite, args.backend, worker_batch=100, path_column_name='path')
         case '_':
             raise ValueError('Invalid mode')
 
