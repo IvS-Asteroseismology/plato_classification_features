@@ -50,14 +50,17 @@ def periodogram_features(time: np.ndarray, flux: np.ndarray, oversampling_factor
     fap_clipped = eps if fundamental_fap < eps else fundamental_fap 
     return {'ls_fundamental_log_10_frequency': fundamental_frequency.item(), 'ls_fundamental_log_10_fap': np.log10(fap_clipped).item()}
 
-def fourier_series_design_matrix(time: np.ndarray, fundamental_frequency: float, num_components: int) -> np.ndarray:
+def fourier_series_design_matrix(time: np.ndarray, fundamental_frequency: float, num_components: int, half_harmonic: bool = True) -> np.ndarray:
     omegat = 2 * np.pi * fundamental_frequency * time
     cos_terms = [np.cos(omegat*j) for j in range(1, num_components+1)]
     sin_terms = [np.sin(omegat*j) for j in range(1, num_components+1)]
+    if half_harmonic:
+        cos_terms += [np.cos(omegat*0.5)]
+        sin_terms += [np.sin(omegat*0.5)]
     return np.concatenate([[np.ones_like(time)] + cos_terms + sin_terms]).T
 
-def fit_fourier_series(time: np.ndarray, flux: np.ndarray, fundamental_frequency: float, num_components: int):
-    X = fourier_series_design_matrix(time, fundamental_frequency=fundamental_frequency, num_components=num_components)
+def fit_fourier_series(time: np.ndarray, flux: np.ndarray, fundamental_frequency: float, num_components: int, half_harmonic: bool = True):
+    X = fourier_series_design_matrix(time, fundamental_frequency=fundamental_frequency, num_components=num_components, half_harmonic=half_harmonic)
     theta, sum_squared_residuals, rank, s = np.linalg.lstsq(X, flux, rcond=None)
     theta_cos, theta_sin = np.array_split(theta[1:], 2)
     # Representation for a model sum_j Aj cos( j omega time - PHj)
@@ -69,14 +72,20 @@ def fit_fourier_series(time: np.ndarray, flux: np.ndarray, fundamental_frequency
 def wrap_to_pi(angle: np.ndarray) -> np.ndarray:
     return (angle + np.pi) % (2*np.pi) - np.pi
 
-def fourier_series_features(time, flux, fundamental_frequency: float, num_components: int = 4, adjust_with_harmonic_ratio: bool = True) -> dict[str, float]:
-    _, amplitudes, phases, sum_squared_residuals = fit_fourier_series(time, flux, fundamental_frequency, num_components)
+def fourier_series_features(time, flux, fundamental_frequency: float, num_components: int = 4, adjust_with_harmonic_ratio: bool = True, add_half_harmonic: bool = True) -> dict[str, float]:
+    _, amplitudes, phases, sum_squared_residuals = fit_fourier_series(time, flux, fundamental_frequency, num_components, half_harmonic=add_half_harmonic)
     # First phase will be reference
     if adjust_with_harmonic_ratio: # As in Debosscher et al. 2007
         relative_phases = wrap_to_pi(phases - np.arange(1, len(phases)+1)*phases[0])[1:]
     else: # As in Richards et al. 2012
         relative_phases = wrap_to_pi(phases - phases[0])[1:]
+    if add_half_harmonic:
+        relative_phases = relative_phases[:-1]
+        half_harmonic_amplitude = amplitudes[-1]
+        amplitudes = amplitudes[:-1]
     output_amplitudes = {f'fourier_amplitude_{j+1}': a.item() for j, a in enumerate(amplitudes)}
+    if add_half_harmonic:
+        output_amplitudes['fourier_amplitude_half'] = half_harmonic_amplitude.item()
     output_phases = {f'fourier_relative_phase_{j+2}': p.item() for j, p in enumerate(relative_phases)}
     output_r2 = {'fourier_r2_fit': 1. - sum_squared_residuals[0].item()/np.sum((flux - np.mean(flux))**2)}
     return {**output_amplitudes, **output_phases, **output_r2}
