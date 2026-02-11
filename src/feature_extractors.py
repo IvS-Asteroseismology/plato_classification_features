@@ -5,7 +5,7 @@ import numpy as np
 import polars as pl
 from joblib import Parallel, delayed
 
-from time_domain_features import max_slope, flux_statistics
+from time_domain_features import max_slope, flux_statistics, autocorrelation_features
 from frequency_domain_features import periodogram_features, fourier_series_features
 from light_curves import read_fits_lc
 
@@ -14,6 +14,7 @@ class FeatureExtractorConfig:
     oversampling_factor: float = 10.0
     peaks_to_finetune: int = 10
     n_harmonics: int = 4
+    max_lag_days: float = 4.0
 
 feature_types = float | str
 
@@ -23,6 +24,7 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     td = {}
     td.update(flux_statistics(flux))
     td.update(max_slope(time, flux))
+    td.update(autocorrelation_features(time, flux, cfg.max_lag_days))
     # Stage 2: periodogram
     pg = periodogram_features(time, flux, oversampling_factor=cfg.oversampling_factor, peaks_to_finetune=cfg.peaks_to_finetune)
     # Second order features: Depend on first order results
@@ -45,7 +47,10 @@ def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
         t, f = read_fits_lc(path)
     except:
         return {"path": str(path), "_error": "parsing error"}
-    feats = extract_features(t, f)
+    try:
+        feats = extract_features(t, f)
+    except Exception as e:
+        return {"path": str(path), "_error": f"feature error: {e}"}
     feats["path"] = str(path)
     return feats
 
