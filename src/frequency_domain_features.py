@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from nifty_ls import finufft
 from astropy.timeseries import LombScargle
 
@@ -18,6 +19,25 @@ def find_top_k_peaks(x: np.ndarray, k: int) -> np.ndarray:
     idx = np.argsort(x[1:-1][local_maxima])[::-1][:k]
     return np.arange(1, len(x)-1)[local_maxima][idx]
 
+def find_top_k_peaks_window_fast(x: np.ndarray, k: int, w: int) -> np.ndarray:
+    n = x.size
+    if n == 0 or k <= 0:
+        return np.array([], dtype=int)
+    if w < 1:
+        raise ValueError("w must be >= 1")
+    if n < 2 * w + 1:
+        return np.array([], dtype=int)
+    win = sliding_window_view(x, 2 * w + 1)
+    center = x[w:n - w]
+    wmax = win.max(axis=1)
+    is_peak = center == wmax
+    # is_peak &= (win == wmax[:, None]).sum(axis=1) == 1
+    peak_idx = (np.arange(w, n - w))[is_peak]
+    if peak_idx.size == 0:
+        return np.array([], dtype=int)
+    order = np.argsort(x[peak_idx])[::-1]
+    return peak_idx[order[:k]]
+
 def compute_lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10.0) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
     delta_time = np.median(time[1:] - time[:-1])
     time_span = time[-1] - time[0]
@@ -26,11 +46,20 @@ def compute_lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, oversamp
     ampl = lombscargle_periodogram(time, flux, fmin, fmax, fres)
     return freqs, ampl, (fmin, fmax, fres)
 
-def periodogram_features(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10., peaks_to_finetune: int = 0) -> dict[str, float]:
+def periodogram_features(
+    time: np.ndarray,
+    flux: np.ndarray,
+    oversampling_factor: float = 10.,
+    peaks_to_finetune: int = 3,
+    finetune_oversampling_factor: float = 10.,
+) -> dict[str, float]:
     freqs, ampl, (fmin, fmax, fres) = compute_lombscargle_periodogram(time, flux, oversampling_factor=oversampling_factor)
+    extra_frequencies = {}
+    fundamental_idx = np.argmax(ampl)
     if peaks_to_finetune>0:
-        peak_idx = find_top_k_peaks(ampl, k=peaks_to_finetune)
-        fres_ft = fres / 10.0  # 10 times finer than coarse grid
+        peak_idx = find_top_k_peaks_window_fast(ampl, k=peaks_to_finetune, w=int(2*oversampling_factor))
+        # peak_idx = find_top_k_peaks(ampl, k=peaks_to_finetune)
+        fres_ft = fres / finetune_oversampling_factor
         for idx in peak_idx:
             f0 = freqs[idx]
             f_lo = max(fmin, f0 - fres)
@@ -39,16 +68,20 @@ def periodogram_features(time: np.ndarray, flux: np.ndarray, oversampling_factor
             ampl_ref = lombscargle_periodogram(time, flux, f_lo, f_hi, fres_ft)
             freqs_ref = frequency_grid(f_lo, f_hi, fres_ft)
             jmax = int(np.argmax(ampl_ref))
-            amax = float(ampl_ref[jmax])
-            fmax_local = float(freqs_ref[jmax])
+            amax = ampl_ref[jmax]
+            fmax_local = freqs_ref[jmax]
+            #print(idx, f_lo, f_hi, f0, fmax_local, ampl[idx], amax)
             ampl[idx] = amax
             freqs[idx] = fmax_local
-    fundamental_idx = np.argmax(ampl)
-    fundamental_frequency = np.log10(freqs[fundamental_idx])
+        peak_idx = peak_idx[np.argsort(ampl[peak_idx])[::-1]]
+        fundamental_idx = peak_idx[0]
+        if peaks_to_finetune > 1:
+            extra_frequencies = {f'ls_frequency_top_{k+2}': freqs[v].item() for k, v in enumerate(peak_idx[1:])}
     fundamental_fap = baluev_false_alarm_probability(ampl[fundamental_idx], time, flux, fmin, fmax)
     eps = np.finfo(float).tiny
     fap_clipped = eps if fundamental_fap < eps else fundamental_fap 
-    return {'ls_fundamental_log_10_frequency': fundamental_frequency.item(), 'ls_fundamental_log_10_fap': np.log10(fap_clipped).item()}
+    fundamental_frequency = {'ls_fundamental_frequency': freqs[fundamental_idx].item(), 'ls_fundamental_fap': fap_clipped.item()}
+    return {**fundamental_frequency, **extra_frequencies}
 
 def fourier_series_design_matrix(time: np.ndarray, fundamental_frequency: float, num_components: int, half_harmonic: bool = True) -> np.ndarray:
     omegat = 2 * np.pi * fundamental_frequency * time
