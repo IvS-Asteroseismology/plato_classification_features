@@ -46,6 +46,7 @@ def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
     except Exception as e:
         return {"path": str(path), "_error": f"feature error: {e}"}
     feats["path"] = str(path)
+    feats["num_negative_fluxes"] = np.sum(f<0.0).item()
     return feats
 
 def iter_batches(seq: list[Any], batch_size: int) -> Iterator[list[Any]]:
@@ -62,7 +63,7 @@ def extract_features_parallel(
     def _extract_many(ps: list[str]) -> list[dict[str, feature_types]]:
         return [extract_features_from_path(p) for p in ps]
 
-    lists = Parallel(n_jobs=n_jobs, backend=backend)(
+    lists = Parallel(n_jobs=n_jobs, backend=backend, batch_size=1)(
         delayed(_extract_many)(sub) for sub in iter_batches(paths, worker_batch_size)
     )
     return [row for sub in lists for row in sub]

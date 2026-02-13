@@ -35,8 +35,6 @@ def read_fits_lc(
        n = (len(flux) // 3) * 3
        time = time[:n].reshape(-1, 3).mean(axis=1)
        flux = flux[:n].reshape(-1, 3).mean(axis=1)
-    if np.sum(flux < 0.0) > 0:
-        raise ValueError("Light curve contains negative fluxes.")
     if return_preprocessed:
         outlier_mask = sigma_clip(flux, sigma_lower=10.0, sigma_upper=5.0).mask
         time, flux = time[~outlier_mask], flux[~outlier_mask]
