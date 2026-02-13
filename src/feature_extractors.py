@@ -11,8 +11,8 @@ from light_curves import read_fits_lc
 
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
-    oversampling_factor: float = 10.0
-    peaks_to_finetune: int = 10
+    oversampling_factor: float = 5.0
+    peaks_to_finetune: int = 3
     n_harmonics: int = 4
     max_lag_days: float = 4.0
 
@@ -28,7 +28,7 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     # Stage 2: periodogram
     pg = periodogram_features(time, flux, oversampling_factor=cfg.oversampling_factor, peaks_to_finetune=cfg.peaks_to_finetune)
     # Second order features: Depend on first order results
-    f0 = 10 ** pg["ls_fundamental_log_10_frequency"]
+    f0 = pg["ls_fundamental_frequency"]
     fs = fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics)
     return {**td, **pg, **fs}
 
