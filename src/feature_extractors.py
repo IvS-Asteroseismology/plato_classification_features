@@ -6,6 +6,7 @@ import polars as pl
 from joblib import Parallel, delayed
 
 from time_domain_features import max_slope, flux_statistics, autocorrelation_features
+from barbara_kepler_features import barbara_features
 from frequency_domain_features import periodogram_features, fourier_series_features
 from light_curves import read_fits_lc
 
@@ -21,32 +22,25 @@ feature_types = float | str
 def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorConfig()) -> dict[str, feature_types]:
     # NOTE: This assumes that time and flux have already been sanitized
     # First order features: No dependencies
-    td = {}
-    td.update(flux_statistics(flux))
-    td.update(max_slope(time, flux))
-    td.update(autocorrelation_features(time, flux, cfg.max_lag_days))
-    # Stage 2: periodogram
-    pg = periodogram_features(time, flux, oversampling_factor=cfg.oversampling_factor, peaks_to_finetune=cfg.peaks_to_finetune)
+    fof = {}
+    fof.update(flux_statistics(flux))
+    fof.update(max_slope(time, flux))
+    fof.update(autocorrelation_features(time, flux, cfg.max_lag_days))
+    fof.update(barbara_features(time, flux))
+    fof.update(periodogram_features(time, flux, oversampling_factor=cfg.oversampling_factor, peaks_to_finetune=cfg.peaks_to_finetune))
     # Second order features: Depend on first order results
-    f0 = pg["ls_fundamental_frequency"]
-    fs = fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics)
-    return {**td, **pg, **fs}
+    f0 = fof["ls_fundamental_frequency"]
+    sof = {}
+    sof.update(fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics))
+    return {**fof, **sof}
 
 def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
     if isinstance(path, str):
         path = Path(path)
     try:
-        file_stats = path.stat()
-    except FileNotFoundError:
-        return {"path": str(path), "_error": "missing"}
-    except OSError as e:
-        return {"path": str(path), "_error": f"oserror: {e}"}
-    if file_stats.st_size == 0:
-        return {"path": str(path), "_error": "empty (0 bytes)"}
-    try:
         t, f = read_fits_lc(path)
-    except:
-        return {"path": str(path), "_error": "parsing error"}
+    except Exception as e:
+        return {"path": str(path), "_error": f"parsing error: {e}"}
     try:
         feats = extract_features(t, f)
     except Exception as e:
