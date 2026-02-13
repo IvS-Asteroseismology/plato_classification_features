@@ -1,5 +1,7 @@
 import numpy as np
-  
+from scipy.signal import find_peaks, find_peaks_cwt
+
+
 def flux_statistics(flux: np.ndarray) -> dict[str, float]:
     N = len(flux)
     mean = np.mean(flux)
@@ -98,23 +100,51 @@ def acf_fft_from_time_flux(time, flux, max_lag_days, gap_factor=15, center='medi
     rho_avg = (rhos.T @ w)
     return np.arange(0, len(rho_avg), 1)*dt_nom, rho_avg, dt_nom
 
-def autocorrelation_features(time: np.ndarray, flux: np.ndarray, max_lag_days: float = 4.0, min_prominence: float = 0.001) -> dict[str, float]:
-    lag, rho, dt = acf_fft_from_time_flux(time, flux, max_lag_days=max_lag_days, gap_factor=15)
-    peak_mask = (rho[1:-1] > min_prominence + rho[:-2]) & (rho[1:-1] >= min_prominence + rho[2:])
-    peak_idx = np.flatnonzero(peak_mask) + 1
+def smooth_hann(x: np.ndarray, w: int) -> np.ndarray:
+    if w % 2 == 0:
+        raise ValueError("Window size has to be odd")
+    win = np.hanning(w)
+    win /= win.sum()
+    y_valid = np.convolve(x, win, mode="valid")
+    y = np.full_like(x, np.nan, dtype=float)
+    half = w // 2
+    y[half:half + y_valid.size] = y_valid
+    return y
+
+def first_two_peaks(
+    lag: np.ndarray,
+    rho: np.ndarray,
+    min_peak_height: float,
+    smooth_window_len: int = 5,
+    min_peak_prominence: float = 0.01
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    max_lag = lag[-1].item()
+    # To decrease the change of bogus peaks we first smooth the acf with a Hann window
+    smooth_rho = smooth_hann(rho, w=smooth_window_len)
+    peak_idx, _ = find_peaks(smooth_rho, height=min_peak_height, prominence=min_peak_prominence, wlen=10)
+    # If no peaks are found we simply output the maximum lag
     if len(peak_idx) == 0:
-        raise ValueError('No peaks in the autocorrelation function')
-    # Peaks with highest rho
-    top2 = peak_idx[np.argsort(rho[peak_idx])[-2:]]
-    if len(top2) == 2:
-        # Sorted by lag
-        top2 = top2[np.argsort(lag[top2])]
-        i1, i2 = top2[0], top2[1]
-        lag1, rho1 = lag[i1].item(), rho[i1].item()
-        lag2, rho2 = lag[i2].item(), rho[i2].item()
+        return (max_lag, 0.0), (max_lag, 0.0)
+    elif len(peak_idx) == 1:
+        i1 = peak_idx[0]
+        return (lag[i1].item(), rho[i1].item()), (max_lag, 0.0)
     else:
-        i1 = top2[0]
-        lag1, rho1 = lag[i1].item(), rho[i1].item()
-        lag2, rho2 = lag[-1].item(), 0.0
-    peak_structure = {'acf_lag_peak1': lag1, 'acf_val_peak1': rho1, 'acf_lag_peak2': lag2, 'acf_val_peak2': rho2, 'acf_val_ratio21': rho2/rho1}
-    return peak_structure
+        i1, i2 = peak_idx[np.argsort(lag[peak_idx])[:2]]
+        return (lag[i1].item(), rho[i1].item()), (lag[i2].item(), rho[i2].item())
+
+def autocorrelation_features(
+    time: np.ndarray,
+    flux: np.ndarray,
+    max_lag_days: float = 4.0,
+    min_peak_height: float = 1/8,
+    min_peak_prominence: float = 0.01
+) -> dict[str, float]:
+    # ACF is computed per segment and then averaged
+    lag, rho, dt = acf_fft_from_time_flux(time, flux, max_lag_days=max_lag_days, gap_factor=15)
+    # Lag at which correlation first goes below 0.5
+    lag_first = lag[rho < 0.5][0]
+    basic_descriptors = {'acf_lag_first_below_05': lag_first.item(), 'acf_val_lag1': rho[1].item()}
+    # Lags and values for the first and second local maxima
+    p1, p2 = first_two_peaks(lag, rho, min_peak_height=min_peak_height, min_peak_prominence=min_peak_prominence)
+    peak_structure = {'acf_lag_peak1': p1[0], 'acf_val_peak1': p1[1], 'acf_lag_peak2': p2[0], 'acf_val_peak2': p2[1]}
+    return {**basic_descriptors, **peak_structure}
