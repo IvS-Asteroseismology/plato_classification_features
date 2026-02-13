@@ -22,15 +22,20 @@ def write_parquet_part(rows: list[dict[str, Any]], out_path: Path) -> None:
     table = pa.Table.from_pylist(rows)
     pq.write_table(table, out_path)
 
+def prefix_key(p: str, keep_parts: int = 10) -> str:
+    # ['', 'STER','mamsie','tess','TIC','plato_fov','s0001','cam3-ccd4','0046','7448', ...]
+    parts = p.split('/')
+    return '/'.join(parts[:keep_parts])
+
 def process_parquet(
         parquet_path: Path,
         save_dir: Path, 
         n_jobs: int, 
         overwrite: bool, 
         joblib_backend: str, 
-        batch_rows: int = 50_000, 
-        worker_batch: int = 1000, 
-        log_every_batches: int = 5,
+        batch_rows: int = 20_000, 
+        worker_batch: int = 20, 
+        log_every_batches: int = 1,
         verbose: bool = False,
         path_column_name: str = 'FilePath',
 ) -> None:
@@ -46,6 +51,7 @@ def process_parquet(
         if out_path.exists() and not overwrite:
             eta.update(len(batch))
             continue
+        batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
         rows = extract_features_parallel(
             batch,
             n_jobs=n_jobs,
@@ -104,9 +110,9 @@ if __name__ == "__main__":
     log = logging.getLogger("features")
     match args.mode:
         case 'inference':
-            process_many_parquets(args.input, args.output, args.n_jobs, args.overwrite, args.backend)
+            process_many_parquets(args.input, args.output / 'features', args.n_jobs, args.overwrite, args.backend)
         case 'training':
-            process_parquet(args.input, args.output / 'training_set', args.n_jobs, args.overwrite, args.backend, worker_batch=100, path_column_name='path')
+            process_parquet(args.input, args.output / 'features' / 'training_set', args.n_jobs, args.overwrite, args.backend, path_column_name='path')
         case '_':
             raise ValueError('Invalid mode')
 
