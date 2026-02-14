@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import Iterator, Any
+from typing import Iterator, Any, Callable
 from pathlib import Path
+from functools import partial
 import numpy as np
 import polars as pl
 from joblib import Parallel, delayed
@@ -8,7 +9,7 @@ from joblib import Parallel, delayed
 from time_domain_features import max_slope, flux_statistics, autocorrelation_features
 from barbara_kepler_features import barbara_features
 from frequency_domain_features import periodogram_features, fourier_series_features
-from light_curves import read_fits_lc
+from light_curves import read_fits_lc, preprocess_lc
 
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
@@ -34,11 +35,19 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     sof.update(fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics))
     return {**fof, **sof}
 
+def extract_light_curves_from_path(path: Path | str) -> dict[str, np.ndarray | str]:
+    try: 
+        time, flux, sector = read_fits_lc(path)
+    except Exception as e:
+        return {'path': str(path), "_error": f"parsing error {e}"}
+    return {'path': str(path), 'sector': sector, 'time': time, 'flux': flux}
+
 def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
     if isinstance(path, str):
         path = Path(path)
     try:
         t, f = read_fits_lc(path)
+        t, f = preprocess_lc(t, f)
     except Exception as e:
         return {"path": str(path), "_error": f"parsing error: {e}"}
     try:
@@ -53,20 +62,24 @@ def iter_batches(seq: list[Any], batch_size: int) -> Iterator[list[Any]]:
     for i in range(0, len(seq), batch_size):
         yield seq[i : i + batch_size]
 
-def extract_features_parallel(
+def extract_in_parallel(
     paths: list[str],
+    extractor_fn: Callable,
     *,
     n_jobs: int,
     backend: str,
     worker_batch_size: int,
 ) -> list[dict[str, feature_types]]:
     def _extract_many(ps: list[str]) -> list[dict[str, feature_types]]:
-        return [extract_features_from_path(p) for p in ps]
+        return [extractor_fn(p) for p in ps]
 
     lists = Parallel(n_jobs=n_jobs, backend=backend, batch_size=1)(
         delayed(_extract_many)(sub) for sub in iter_batches(paths, worker_batch_size)
     )
     return [row for sub in lists for row in sub]
+
+extract_features_parallel = partial(extract_in_parallel, extractor_fn=extract_features_from_path)
+extract_light_curves_parallel = partial(extract_in_parallel, extractor_fn=extract_light_curves_from_path)
 
 
 if __name__ == '__main__':
