@@ -1,19 +1,26 @@
 from collections import Counter
 from pathlib import Path
+from functools import partial
 from typing import Iterator, Any, Callable
 import argparse
 import logging
 import pyarrow as pa
 import pyarrow.parquet as pq
-from tqdm import tqdm
 
-from feature_extractors import extract_features_parallel, extract_light_curves_parallel
+from parallel_utils import extract_in_parallel
+from extractors import ExtractorFn, extract_features_from_row, extract_light_curve_from_row
 from eta_estimator import ETAEstimator
 
-def iter_parquet_column(parquet_path: Path | str, *, batch_rows: int, col: str) -> Iterator[list[str]]:
+
+def iter_parquet_column(
+        parquet_path: Path | str, 
+        *, 
+        batch_rows: int, 
+        cols: list[str] | None = None,
+) -> Iterator[list[dict[str, Any]]]:
     pf = pq.ParquetFile(parquet_path)
-    for batch in pf.iter_batches(columns=[col], batch_size=batch_rows):
-        yield batch.column(0).to_pylist()
+    for batch in pf.iter_batches(columns=cols, batch_size=batch_rows):
+        yield batch.to_pylist()
 
 def parquet_num_rows(parquet_path: str | Path) -> int:
     pf = pq.ParquetFile(parquet_path)
@@ -28,39 +35,9 @@ def prefix_key(p: str, keep_parts: int = 10) -> str:
     parts = p.split('/')
     return '/'.join(parts[:keep_parts])
 
-def process_path_parquet(
-    parquet_path: Path,
-    save_dir: Path,
-    overwrite: bool = False,
-    batch_rows: int = 20_000,
-    path_column_name: str = 'FilePath',
-) -> None:
-    if not parquet_path.exists():
-        raise FileNotFoundError(f"No parquet found under {parquet_path}")
-    total_rows = parquet_num_rows(parquet_path)
-    save_dir.mkdir(parents=True, exist_ok=True)
-    log.info(f"Parquet {parquet_path.stem}: {total_rows} paths")
-    for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows, col=path_column_name)):
-        out_path = save_dir / f"part-{part_id:06d}.parquet"
-        if out_path.exists() and not overwrite:
-            continue
-        batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
-        rows = extract_light_curves_parallel(batch, n_jobs=16, backend='loky', worker_batch_size=20)
-        failed = [row for row in rows if '_error' in row]
-        if len(failed) > 0:
-            log.error(f"Batch {part_id}: {len(failed)}/{len(rows)} files failed")
-            errors = [row['_error'] for row in failed]
-            cerrors = Counter(errors)
-            for reason, count in cerrors.items():
-                log.error(f"\t {reason}: {count}")
-        rows = [row for row in rows if '_error' not in row]
-        write_parquet_part(rows, out_path)
-        log.info(f"part {part_id} done")
-    log.info(f"Directory done. {eta.fmt()}")
-            
-
 def process_parquet(
         parquet_path: Path,
+        extractor_fn: ExtractorFn,
         save_dir: Path, 
         n_jobs: int, 
         overwrite: bool, 
@@ -69,7 +46,6 @@ def process_parquet(
         worker_batch: int = 20, 
         log_every_batches: int = 1,
         verbose: bool = False,
-        path_column_name: str = 'FilePath',
 ) -> None:
     if not parquet_path.exists():
         raise FileNotFoundError(f"No parquet found under {parquet_path}")
@@ -77,14 +53,15 @@ def process_parquet(
     eta = ETAEstimator(total=total_rows)
     log.info(f"Parquet {parquet_path.stem}: {total_rows} paths")
     save_dir.mkdir(parents=True, exist_ok=True)
+    parallel_extractor = partial(extract_in_parallel, extractor_fn=extractor_fn)
 
-    for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows, col=path_column_name)):
+    for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows)):
         out_path = save_dir / f"part-{part_id:06d}.parquet"
         if out_path.exists() and not overwrite:
             eta.update(len(batch))
             continue
-        batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
-        rows = extract_features_parallel(
+        # batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
+        rows = parallel_extractor(
             batch,
             n_jobs=n_jobs,
             backend=joblib_backend,
@@ -107,7 +84,7 @@ def process_parquet(
             log.info(f"part {part_id}, progress {eta.fmt()}")
     log.info(f"Directory done. {eta.fmt()}")
 
-def process_many_parquets(parquet_dir: Path, save_dir: Path, n_jobs: int, overwrite: bool, joblib_backend: str) -> None:
+def process_many_parquets(parquet_dir: Path, extractor_fn: ExtractorFn, save_dir: Path, n_jobs: int, overwrite: bool, joblib_backend: str) -> None:
     parquets = sorted(parquet_dir.glob("*.parquet"))
     if not parquets:
         raise FileNotFoundError(f"No parquets found under {parquet_dir}")
@@ -115,6 +92,7 @@ def process_many_parquets(parquet_dir: Path, save_dir: Path, n_jobs: int, overwr
     for parquet_path in parquets:
         process_parquet(
             parquet_path=parquet_path, 
+            extractor_fn=extractor_fn,
             save_dir=save_dir / parquet_path.stem, 
             n_jobs=n_jobs, 
             overwrite=overwrite, 
@@ -140,13 +118,23 @@ if __name__ == "__main__":
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
     log = logging.getLogger("features")
+
+    def run(fn: Callable, extractor: ExtractorFn, out_dir: Path) -> None:
+        fn(
+            args.input,
+            extractor,
+            out_dir,
+            n_jobs=args.n_jobs,
+            overwrite=args.overwrite,
+            joblib_backend=args.backend,
+        )
     match args.mode:
         case 'preparation':
-            process_path_parquet(args.input, args.output / 'light_curves' / args.input.stem, overwrite=args.overwrite)
+            run(process_many_parquets, extract_light_curve_from_row, args.output / 'light_curves')
         case 'inference':
-            process_many_parquets(args.input, args.output / 'features', args.n_jobs, overwrite=args.overwrite, joblib_backend=args.backend)
+            run(process_many_parquets, extract_features_from_row, args.output / 'features')
         case 'training':
-            process_parquet(args.input, args.output / 'features' / 'training_set', args.n_jobs, overwrite=args.overwrite, joblib_backend=args.backend, path_column_name='path')
+            run(process_parquet, extract_features_from_row, args.output / 'features' / 'training_set')
         case '_':
             raise ValueError('Invalid mode')
 

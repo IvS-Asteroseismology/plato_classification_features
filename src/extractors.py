@@ -1,15 +1,19 @@
 from dataclasses import dataclass
-from typing import Iterator, Any, Callable
+from typing import Any, Protocol
 from pathlib import Path
-from functools import partial
 import numpy as np
 import polars as pl
-from joblib import Parallel, delayed
 
 from time_domain_features import max_slope, flux_statistics, autocorrelation_features
 from barbara_kepler_features import barbara_features
 from frequency_domain_features import periodogram_features, fourier_series_features
 from light_curves import read_fits_lc, preprocess_lc
+
+class ExtractorFn(Protocol):
+    def __call__(
+        self,
+        row: dict[str, Any],
+    ) -> dict[str, Any]: ...
 
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
@@ -35,51 +39,41 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     sof.update(fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics))
     return {**fof, **sof}
 
-def extract_light_curves_from_path(path: Path | str) -> dict[str, np.ndarray | str]:
+def extract_features_from_light_curve(time: np.ndarray, flux: np.ndarray, sector: int) -> dict[str, Any]:
+    try:
+        time, flux = preprocess_lc(time, flux, sector)
+    except Exception as e:
+        return {"path": str(path), "_error": f"preprocessing error: {e}"}
+    try:
+        feats = extract_features(time, flux)
+    except Exception as e:
+        return {"path": str(path), "_error": f"feature error: {e}"}
+    feats["path"] = str(path)
+    feats["num_negative_fluxes"] = np.sum(flux<0.0).item()
+    return feats
+
+def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
+    if isinstance(path, str):
+        path = Path(path)
+    try:
+        time, flux, sector = read_fits_lc(path)
+    except Exception as e:
+        return {"path": str(path), "_error": f"parsing error: {e}"}
+    return extract_features_from_light_curve(time, flux, sector)
+
+def extract_features_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    time, flux, sector = row['time'], row['flux'], row['sector']
+    return extract_features_from_light_curve(time, flux, sector)
+
+def extract_light_curve_from_path(path: Path | str) -> dict[str, Any]:
     try: 
         time, flux, sector = read_fits_lc(path)
     except Exception as e:
         return {'path': str(path), "_error": f"parsing error {e}"}
     return {'path': str(path), 'sector': sector, 'time': time, 'flux': flux}
 
-def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
-    if isinstance(path, str):
-        path = Path(path)
-    try:
-        t, f = read_fits_lc(path)
-        t, f = preprocess_lc(t, f)
-    except Exception as e:
-        return {"path": str(path), "_error": f"parsing error: {e}"}
-    try:
-        feats = extract_features(t, f)
-    except Exception as e:
-        return {"path": str(path), "_error": f"feature error: {e}"}
-    feats["path"] = str(path)
-    feats["num_negative_fluxes"] = np.sum(f<0.0).item()
-    return feats
-
-def iter_batches(seq: list[Any], batch_size: int) -> Iterator[list[Any]]:
-    for i in range(0, len(seq), batch_size):
-        yield seq[i : i + batch_size]
-
-def extract_in_parallel(
-    paths: list[str],
-    extractor_fn: Callable,
-    *,
-    n_jobs: int,
-    backend: str,
-    worker_batch_size: int,
-) -> list[dict[str, feature_types]]:
-    def _extract_many(ps: list[str]) -> list[dict[str, feature_types]]:
-        return [extractor_fn(p) for p in ps]
-
-    lists = Parallel(n_jobs=n_jobs, backend=backend, batch_size=1)(
-        delayed(_extract_many)(sub) for sub in iter_batches(paths, worker_batch_size)
-    )
-    return [row for sub in lists for row in sub]
-
-extract_features_parallel = partial(extract_in_parallel, extractor_fn=extract_features_from_path)
-extract_light_curves_parallel = partial(extract_in_parallel, extractor_fn=extract_light_curves_from_path)
+def extract_light_curve_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    return extract_light_curve_from_path(row['path'] if 'path' in row else row['FilePath'])
 
 
 if __name__ == '__main__':

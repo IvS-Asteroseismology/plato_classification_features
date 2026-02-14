@@ -11,10 +11,10 @@ def read_fits_lc(
         flux_column: str = "cal_aper_flux", 
         apply_quality_masks: bool = True, 
         
-) -> tuple[np.ndarray, np.ndarray, str | None]:
+) -> tuple[np.ndarray, np.ndarray, int]:
     with fitsio.FITS(path) as f:
         header = f[0].read_header()
-        sector = header['SECTOR'] if 'SECTOR' in header else None
+        sector = int(header['SECTOR'])
         hdu_data = f[hdu_index]
         time = hdu_data.read_column("time").astype('float64')
         flux = hdu_data.read_column(flux_column).astype('float64')
@@ -30,6 +30,7 @@ def read_fits_lc(
 def preprocess_lc(
     time: np.ndarray,
     flux: np.ndarray,
+    sector: int,
     min_non_nan_points: int = 10,
     detrend_sigma: float = 100
 ) -> tuple[np.ndarray, np.ndarray]:
