@@ -39,7 +39,7 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     sof.update(fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics))
     return {**fof, **sof}
 
-def extract_features_from_light_curve(time: np.ndarray, flux: np.ndarray, sector: int) -> dict[str, Any]:
+def extract_features_from_light_curve(time: np.ndarray, flux: np.ndarray, sector: int, path: Path | str) -> dict[str, Any]:
     try:
         time, flux = preprocess_lc(time, flux, sector)
     except Exception as e:
@@ -59,11 +59,14 @@ def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
         time, flux, sector = read_fits_lc(path)
     except Exception as e:
         return {"path": str(path), "_error": f"parsing error: {e}"}
-    return extract_features_from_light_curve(time, flux, sector)
+    return extract_features_from_light_curve(time, flux, sector, path)
 
 def extract_features_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    time, flux, sector = row['time'], row['flux'], row['sector']
-    return extract_features_from_light_curve(time, flux, sector)
+    time = np.asarray(row['time'])
+    flux = np.asarray(row['flux'])
+    sector = row['sector']
+    path = row['path']
+    return extract_features_from_light_curve(time, flux, sector, path)
 
 def extract_light_curve_from_path(path: Path | str) -> dict[str, Any]:
     try: 
