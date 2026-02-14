@@ -10,9 +10,8 @@ def read_fits_lc(
         hdu_index: int = 1, 
         flux_column: str = "cal_aper_flux", 
         apply_quality_masks: bool = True, 
-        min_non_nan_points: int = 10, 
-        return_preprocessed: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
+        
+) -> tuple[np.ndarray, np.ndarray, str | None]:
     with fitsio.FITS(path) as f:
         header = f[0].read_header()
         sector = header['SECTOR'] if 'SECTOR' in header else None
@@ -26,6 +25,14 @@ def read_fits_lc(
         good_quality_mask = np.logical_and(tess_flags == 0, tglc_flags == 0)
         time = time[good_quality_mask]
         flux = flux[good_quality_mask]
+    return time, flux, sector
+
+def preprocess_lc(
+    time: np.ndarray,
+    flux: np.ndarray,
+    min_non_nan_points: int = 10,
+    detrend_sigma: float = 100
+) -> tuple[np.ndarray, np.ndarray]:
     good_mask = ~np.isnan(flux) & ~np.isinf(flux)
     if np.sum(good_mask) < min_non_nan_points:
         raise ValueError("A light curve contains too many NaN values.")
@@ -35,13 +42,11 @@ def read_fits_lc(
        n = (len(flux) // 3) * 3
        time = time[:n].reshape(-1, 3).mean(axis=1)
        flux = flux[:n].reshape(-1, 3).mean(axis=1)
-    if return_preprocessed:
-        outlier_mask = sigma_clip(flux, sigma_lower=10.0, sigma_upper=5.0).mask
-        time, flux = time[~outlier_mask], flux[~outlier_mask]
-        # time, flux = remove_outliers_robust(time, flux, 100.0, 5.0)
-        if len(flux) == 0:
-            raise ValueError("Light curve is empty after removing outliers.")
-        time, flux = detrend_light_curve(time, flux, detrend_sigma=100, mode='reflect')
+    outlier_mask = sigma_clip(flux, sigma_lower=10.0, sigma_upper=5.0).mask
+    time, flux = time[~outlier_mask], flux[~outlier_mask]
+    if len(flux) == 0:
+        raise ValueError("Light curve is empty after removing outliers.")
+    time, flux = detrend_light_curve(time, flux, detrend_sigma=detrend_sigma, mode='reflect')
     return time, flux
 
 def smooth_time_series(time_series: np.ndarray, sigma: float, mode: str = 'nearest') -> np.ndarray:
