@@ -4,6 +4,7 @@ from functools import partial
 from typing import Iterator, Any, Callable
 import argparse
 import logging
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -60,8 +61,11 @@ def process_parquet(
         raise FileNotFoundError(f"No parquet found under {parquet_path}")
     total_rows = parquet_num_rows(parquet_path)
     eta = ETAEstimator(total=total_rows)
-    log.info(f"Parquet {parquet_path.stem}: {total_rows} paths")
-    save_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"Parquet {parquet_path.name}: {total_rows} rows")
+    if save_dir.is_dir():
+        save_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        save_dir.parent.mkdir(parents=True, exist_ok=True)
     parallel_extractor = partial(extract_in_parallel, extractor_fn=extractor_fn)
     
     if total_rows > batch_rows:
@@ -78,11 +82,12 @@ def process_parquet(
             if (part_id + 1) % log_every_batches == 0:
                 log.info(f"part {part_id}, progress {eta.fmt()}")
     else:
-        batch = pq.read_table(parquet_path, use_threads=True, memory_map=True, pre_buffer=True).to_pylist()
-        out_path = save_dir / parquet_path.name
+        log.info(f"Reading {parquet_path}")
+        batch = pl.read_parquet(parquet_path).to_dicts()
         rows = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
         rows = remove_and_report_errors(rows)
-        write_parquet_part(rows, out_path)
+        write_parquet_part(rows, save_dir)
+        eta.update(len(batch))
     log.info(f"Directory done. {eta.fmt()}")
 
 def process_parquets_recursive(parquet_path_or_dir: Path, extractor_fn: ExtractorFn, save_dir: Path, n_jobs: int, overwrite: bool, joblib_backend: str) -> None:
