@@ -35,6 +35,16 @@ def prefix_key(p: str, keep_parts: int = 10) -> str:
     parts = p.split('/')
     return '/'.join(parts[:keep_parts])
 
+def remove_and_report_errors(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failed = [row for row in rows if '_error' in row]
+    if len(failed) > 0:
+        log.error(f"{len(failed)}/{len(rows)} files failed")
+        errors = [row['_error'] for row in failed]
+        cerrors = Counter(errors)
+        for reason, count in cerrors.items():
+            log.error(f"\t {reason}: {count}")
+    return [row for row in rows if '_error' not in row]
+
 def process_parquet(
         parquet_path: Path,
         extractor_fn: ExtractorFn,
@@ -45,7 +55,6 @@ def process_parquet(
         batch_rows: int = 20_000, 
         worker_batch: int = 20, 
         log_every_batches: int = 1,
-        verbose: bool = False,
 ) -> None:
     if not parquet_path.exists():
         raise FileNotFoundError(f"No parquet found under {parquet_path}")
@@ -55,34 +64,25 @@ def process_parquet(
     save_dir.mkdir(parents=True, exist_ok=True)
     parallel_extractor = partial(extract_in_parallel, extractor_fn=extractor_fn)
     
-
-    for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows)):
-        out_path = save_dir / f"part-{part_id:06d}.parquet"
-        if out_path.exists() and not overwrite:
+    if total_rows > batch_rows:
+        for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows)):
+            out_path = save_dir / f"part-{part_id:06d}.parquet"
+            if out_path.exists() and not overwrite:
+                eta.update(len(batch))
+                continue
+            # batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
+            rows = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
+            rows = remove_and_report_errors(rows)
+            write_parquet_part(rows, out_path)
             eta.update(len(batch))
-            continue
-        # batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
-        rows = parallel_extractor(
-            batch,
-            n_jobs=n_jobs,
-            backend=joblib_backend,
-            worker_batch_size=worker_batch,
-        )
-        failed = [row for row in rows if '_error' in row]
-        if verbose:
-            for row in failed:
-                log.error(f"Failed: {row['path']} | {row['_error']}")
-        if len(failed) > 0:
-            log.error(f"Batch {part_id}: {len(failed)}/{len(rows)} files failed")
-            errors = [row['_error'] for row in failed]
-            cerrors = Counter(errors)
-            for reason, count in cerrors.items():
-                log.error(f"\t {reason}: {count}")
-        rows = [row for row in rows if '_error' not in row]
+            if (part_id + 1) % log_every_batches == 0:
+                log.info(f"part {part_id}, progress {eta.fmt()}")
+    else:
+        batch = pq.read_table(parquet_path, use_threads=True, memory_map=True, pre_buffer=True).to_pylist()
+        out_path = save_dir / parquet_path.name
+        rows = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
+        rows = remove_and_report_errors(rows)
         write_parquet_part(rows, out_path)
-        eta.update(len(batch))
-        if (part_id + 1) % log_every_batches == 0:
-            log.info(f"part {part_id}, progress {eta.fmt()}")
     log.info(f"Directory done. {eta.fmt()}")
 
 def process_parquets_recursive(parquet_path_or_dir: Path, extractor_fn: ExtractorFn, save_dir: Path, n_jobs: int, overwrite: bool, joblib_backend: str) -> None:
