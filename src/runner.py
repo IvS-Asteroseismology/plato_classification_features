@@ -99,7 +99,7 @@ def process_parquets_recursive(parquet_path_or_dir: Path, extractor_fn: Extracto
                 out_dir = save_dir / rel_parent
             process_parquet(parquet_path=parquet_path, extractor_fn=extractor_fn, save_dir=out_dir, n_jobs=n_jobs, overwrite=overwrite, joblib_backend=joblib_backend)
     elif parquet_path_or_dir.is_file(): 
-        if parquet_path_or_dir.suffix != 'parquet':
+        if parquet_path_or_dir.suffix != '.parquet':
             raise ValueError(f"Expected a .parquet file, got {parquet_path_or_dir}")
         out_dir = save_dir / parquet_path_or_dir.stem
         process_parquet(parquet_path=parquet_path_or_dir, extractor_fn=extractor_fn, save_dir=out_dir, n_jobs=n_jobs, overwrite=overwrite, joblib_backend=joblib_backend)
@@ -141,7 +141,7 @@ if __name__ == "__main__":
         case 'inference':
             run(process_parquets_recursive, extract_features_from_row, args.output / 'features')
         case 'training':
-            run(process_parquet, extract_features_from_row, args.output / 'features' / 'training_set')
+            run(process_parquets_recursive, extract_features_from_row, args.output / 'features' / 'training_set')
         case '_':
             raise ValueError('Invalid mode')
 
