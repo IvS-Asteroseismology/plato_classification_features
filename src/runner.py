@@ -82,6 +82,9 @@ def process_parquet(
             if (part_id + 1) % log_every_batches == 0:
                 log.info(f"part {part_id}, progress {eta.fmt()}")
     else:
+        if save_dir.exists() and save_dir.is_file() and not overwrite:
+            log.info(f"File {save_dir} exists, skipping.")
+            return
         log.info(f"Reading {parquet_path}")
         batch = pl.read_parquet(parquet_path).to_dicts()
         rows = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
