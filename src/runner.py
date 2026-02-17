@@ -62,10 +62,10 @@ def process_parquet(
     total_rows = parquet_num_rows(parquet_path)
     eta = ETAEstimator(total=total_rows)
     log.info(f"Parquet {parquet_path.name}: {total_rows} rows")
-    if save_dir.is_dir():
-        save_dir.mkdir(parents=True, exist_ok=True)
-    else:
+    if save_dir.suffix.lower() == ".parquet":
         save_dir.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        save_dir.mkdir(parents=True, exist_ok=True)
     parallel_extractor = partial(extract_in_parallel, extractor_fn=extractor_fn)
     
     if total_rows > batch_rows:
@@ -149,7 +149,7 @@ if __name__ == "__main__":
         case 'inference':
             run(process_parquets_recursive, extract_features_from_row, args.output / 'features')
         case 'training':
-            run(process_parquets_recursive, extract_features_from_row, args.output / 'features' / 'training_set')
+            run(process_parquets_recursive, extract_features_from_row, args.output / 'features' / args.input.name)
         case '_':
             raise ValueError('Invalid mode')
 
