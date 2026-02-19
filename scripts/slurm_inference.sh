@@ -3,7 +3,7 @@
 #SBATCH --account=ivsusers
 #SBATCH --time=23:59:00
 #SBATCH --output=/home/pabloh/stdout_plato.log
-#SBATCH --error=/home/pabloh/stderri_plato.log
+#SBATCH --error=/home/pabloh/stderr_plato.log
 #SBATCH --cpus-per-task=64
 #SBATCH --hint=multithread
 #SBATCH --ntasks=1
