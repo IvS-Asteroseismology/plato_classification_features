@@ -18,9 +18,10 @@ class ExtractorFn(Protocol):
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
     oversampling_factor: float = 5.0
-    peaks_to_finetune: int = 3
+    num_peaks_for_peak_structure: int = 3
     n_harmonics: int = 4
     max_lag_days: float = 4.0
+    return_relative_fourier_amplitudes = True
 
 feature_types = float | str
 
@@ -32,11 +33,17 @@ def extract_features(time, flux, cfg: FeatureExtractorConfig = FeatureExtractorC
     fof.update(max_slope(time, flux))
     fof.update(autocorrelation_features(time, flux, cfg.max_lag_days))
     fof.update(barbara_features(time, flux))
-    fof.update(periodogram_features(time, flux, oversampling_factor=cfg.oversampling_factor, peaks_to_finetune=cfg.peaks_to_finetune))
+    fof.update(periodogram_features(
+        time, flux, 
+        oversampling_factor=cfg.oversampling_factor, num_peaks_for_peak_structure=cfg.num_peaks_for_peak_structure
+    ))
     # Second order features: Depend on first order results
-    f0 = fof["ls_fundamental_frequency"]
+    f0 = fof["ls_frequency_fundamental"]
     sof = {}
-    sof.update(fourier_series_features(time, flux, fundamental_frequency=f0, num_components=cfg.n_harmonics))
+    sof.update(fourier_series_features(
+        time, flux, fundamental_frequency=f0, 
+        num_components=cfg.n_harmonics, return_relative_amplitudes=cfg.return_relative_fourier_amplitudes,
+    ))
     return {**fof, **sof}
 
 def extract_features_from_light_curve(time: np.ndarray, flux: np.ndarray, sector: int, path: Path | str) -> dict[str, Any]:
@@ -76,25 +83,4 @@ def extract_light_curve_from_path(path: Path | str) -> dict[str, Any]:
     return {'path': str(path), 'sector': sector, 'time': time, 'flux': flux}
 
 def extract_light_curve_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    return extract_light_curve_from_path(row['path'] if 'path' in row else row['FilePath'])
-
-
-if __name__ == '__main__':
-
-    data = pl.read_csv('data/random5.csv').with_columns(
-        pl.col("time").str.json_decode(dtype=pl.List(pl.Float64)),
-        pl.col("flux").str.json_decode(dtype=pl.List(pl.Float64)),
-    )
-    def get_lc(row_idx: int = 0) -> tuple[str, np.ndarray, np.ndarray]:
-        row = data.slice(row_idx, 1)
-        path = row['path'][0]
-        time = row['time'][0].to_numpy()
-        flux = row['flux'][0].to_numpy()
-        return path, time, flux
-    
-    features = []
-    for k in range(data.height):
-        path, time, flux = get_lc(k)
-        features.append({'path': path} | extract_features(time, flux))
-    pl.DataFrame(features).write_parquet('features.parquet')
-        
+    return extract_light_curve_from_path(row['path'] if 'path' in row else row['FilePath'])     
