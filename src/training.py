@@ -16,17 +16,14 @@ def prepare_features_for_classification(
     dropped_columns = df.select(['path'] + drop_columns)
     return df.drop(drop_columns), dropped_columns
 
-def make_predictions(clf, label_encoder, X_preprocessed: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    #class_mapper = {k: v for k, v in enumerate(clf.classes_)}
-    #inv_mapper = {v: k for k, v in class_mapper.items()}    
-    y_pred_proba = clf.predict_proba(X_preprocessed)    
+def make_predictions(clf, label_encoder, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    y_pred_proba = clf.predict_proba(X).astype('float64')
     y_pred = label_encoder.inverse_transform(y_pred_proba.argmax(axis=1))
-    #y_pred = np.array([class_mapper[pred] for pred in y_pred])
     y_entropy = -np.sum(y_pred_proba*np.log(y_pred_proba+1e-12), axis=1)/np.log(y_pred_proba.shape[1])
     return y_pred_proba, y_pred, y_entropy
 
-def prepare_predictions_dataframe(clf, label_encoder, X_preprocessed, paths, drop_nans: bool = True) -> pl.DataFrame:
-    y_pred_proba, y_pred, y_entropy = make_predictions(clf, label_encoder, X_preprocessed)
+def prepare_predictions_dataframe(clf, label_encoder, X: np.ndarray, paths: np.ndarray, drop_nans: bool = True) -> pl.DataFrame:
+    y_pred_proba, y_pred, y_entropy = make_predictions(clf, label_encoder, X)
     non_nan_mask = ~np.isnan(y_entropy)
     class_names = label_encoder.classes_
     df_pred = pl.DataFrame({
