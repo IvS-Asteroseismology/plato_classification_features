@@ -62,13 +62,16 @@ def process_parquet(
     total_rows = parquet_num_rows(parquet_path)
     eta = ETAEstimator(total=total_rows)
     log.info(f"Parquet {parquet_path.name}: {total_rows} rows")
-    if save_dir.suffix.lower() == ".parquet":
+    if not save_dir.suffix == "": # Note: is_file() does not work if file does not exist so we check suffix instead
         save_dir.parent.mkdir(parents=True, exist_ok=True)
     else:
         save_dir.mkdir(parents=True, exist_ok=True)
     parallel_extractor = partial(extract_in_parallel, extractor_fn=extractor_fn)
     
     if total_rows > batch_rows:
+        if not save_dir.suffix == "": # Parquet name will become the directory name
+            save_dir = save_dir.with_suffix("")
+            save_dir.mkdir(parents=True, exist_ok=True)
         for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows)):
             out_path = save_dir / f"part-{part_id:06d}.parquet"
             if out_path.exists() and not overwrite:
@@ -101,10 +104,12 @@ def process_parquets_recursive(parquet_path_or_dir: Path, extractor_fn: Extracto
         log.info("Found %d parquet(s).", len(parquets))
         for parquet_path in parquets:
             rel_parent = parquet_path.relative_to(parquet_path_or_dir)
+            print(rel_parent)
             if rel_parent == Path("."):
                 out_dir = save_dir / parquet_path.stem
             else:
                 out_dir = save_dir / rel_parent
+            print(out_dir)
             process_parquet(parquet_path=parquet_path, extractor_fn=extractor_fn, save_dir=out_dir, n_jobs=n_jobs, overwrite=overwrite, joblib_backend=joblib_backend)
     elif parquet_path_or_dir.is_file(): 
         if parquet_path_or_dir.suffix != '.parquet':
@@ -123,6 +128,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("output", type=Path, help="Directory to save the extracted features")
     p.add_argument("--n-jobs", type=int, default=8)
     p.add_argument("--backend", choices=("threading", "loky"), default="loky", help="joblib backend")
+    p.add_argument("--flux-type", choices=("psf", "aper"), default="aper", help="Flux columns to extract from FITS files.")
+    p.add_argument("--uncalibrated", action=argparse.BooleanOptionalAction, default=False, help="Flag to use uncalibrated aperture/psf time series.")
     p.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=False, help="Overwrite existing output part files.")
     return p.parse_args()
 
@@ -145,9 +152,11 @@ if __name__ == "__main__":
         )
     match args.mode:
         case 'preparation':
-            run(process_parquets_recursive, extract_light_curve_from_row, args.output / 'light_curves')
+            lc_extractor_fn = partial(extract_light_curve_from_row, flux_type=args.flux_type)
+            run(process_parquets_recursive, lc_extractor_fn, args.output / 'light_curves')
         case 'inference':
-            run(process_parquets_recursive, extract_features_from_row, args.output / 'features')
+            feat_extractor_fn = partial(extract_features_from_row, uncalibrated_flux=args.uncalibrated)
+            run(process_parquets_recursive, feat_extractor_fn, args.output / 'features')
         case 'training':
             run(process_parquets_recursive, extract_features_from_row, args.output / 'features' / args.input.name)
         case '_':

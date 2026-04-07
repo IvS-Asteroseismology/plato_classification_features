@@ -59,28 +59,42 @@ def extract_features_from_light_curve(time: np.ndarray, flux: np.ndarray, sector
     feats["num_negative_fluxes"] = np.sum(flux<0.0).item()
     return feats
 
+"""
 def extract_features_from_path(path: Path | str) -> dict[str, feature_types]:
     if isinstance(path, str):
         path = Path(path)
     try:
-        time, flux, sector = read_fits_lc(path)
+        time, flux, flux_error, sector = read_fits_lc(path)
     except Exception as e:
         return {"path": str(path), "_error": f"parsing error: {e}"}
     return extract_features_from_light_curve(time, flux, sector, path)
+"""
 
-def extract_features_from_row(row: dict[str, Any]) -> dict[str, Any]:
+def extract_features_from_row(row: dict[str, Any], uncalibrated_flux: bool = False) -> dict[str, Any]:
     time = np.asarray(row['time'])
-    flux = np.asarray(row['flux'])
+    if uncalibrated_flux:
+        flux = np.asarray(row['raw_flux'])
+    else:
+        flux = np.asarray(row['cal_flux'])
     sector = row['sector']
     path = row['path']
     return extract_features_from_light_curve(time, flux, sector, path)
 
-def extract_light_curve_from_path(path: Path | str) -> dict[str, Any]:
-    try: 
-        time, flux, sector = read_fits_lc(path)
+def extract_light_curve_from_path(path: Path | str, flux_type: str = "aper") -> dict[str, Any]:
+    try:
+        lc = read_fits_lc(path, flux_type=flux_type)
     except Exception as e:
-        return {'path': str(path), "_error": f"parsing error {e}"}
-    return {'path': str(path), 'sector': sector, 'time': time, 'flux': flux}
+        return {'path': str(path), '_error': f"parsing error {e}"}
+    return {
+        'path'      : str(path),
+        'sector'    : lc.sector,
+        'flux_type' : lc.flux_type,
+        'time'      : lc.time,
+        'raw_flux'  : lc.raw_flux,
+        'cal_flux'  : lc.cal_flux,
+        'raw_error' : lc.raw_error,
+        'cal_error' : lc.cal_error,
+    }
 
-def extract_light_curve_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    return extract_light_curve_from_path(row['path'] if 'path' in row else row['FilePath'])     
+def extract_light_curve_from_row(row: dict[str, Any], flux_type: str) -> dict[str, Any]:
+    return extract_light_curve_from_path(row['path'] if 'path' in row else row['FilePath'], flux_type=flux_type)
