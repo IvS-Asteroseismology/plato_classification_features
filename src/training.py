@@ -31,9 +31,9 @@ def prepare_predictions_dataframe(clf, label_encoder, X: np.ndarray, paths: np.n
     } | {
         name: y_pred_proba[non_nan_mask, k] for k, name in enumerate(class_names)
     } | {
-        'best_rf_class': y_pred[non_nan_mask], 'rf_entropy': y_entropy
+        'best_class': y_pred[non_nan_mask], 'entropy': y_entropy
     })
     df_pred = df_pred.with_columns(
-        pl.concat_list([pl.col(k) for k in class_names]).list.max().alias('best_rf_proba')
+        pl.concat_list([pl.col(k) for k in class_names]).list.max().alias('best_proba')
     )
     return df_pred
