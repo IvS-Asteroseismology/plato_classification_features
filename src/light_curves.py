@@ -69,41 +69,52 @@ def read_fits_lc(
         flux_type = flux_type,
     )
 
+@dataclass(frozen=True)
+class PreprocessingConfig:
+    use_calibrated_flux: bool = True
+    sigma_clip_lower: float = 10.0
+    sigma_clip_upper: float = 5.0
+    bin_extended_mission_cadence: bool = True
+    detrend_sigma: float = 100
+    detrend_mode: str = 'reflect'
+
 def preprocess_lc(
     time: np.ndarray,
     flux: np.ndarray,
     sector: int,
-    min_non_nan_points: int = 10,
-    detrend_sigma: float = 100
+    cfg: PreprocessingConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
     good_mask = ~np.isnan(flux) & ~np.isinf(flux)
-    if np.sum(good_mask) < min_non_nan_points:
+    if not np.any(good_mask):
         raise ValueError("A light curve contains too many NaN values.")
     time = time[good_mask]
     flux = flux[good_mask]
-    if sector is not None and sector >= 27 and len(flux) >= 3:
-       n = (len(flux) // 3) * 3
-       time = time[:n].reshape(-1, 3).mean(axis=1)
-       flux = flux[:n].reshape(-1, 3).mean(axis=1)
-    outlier_mask = sigma_clip(flux, sigma_lower=10.0, sigma_upper=5.0).mask
+    if cfg.bin_extended_mission_cadence and sector is not None and sector >= 27 and len(flux) >= 3:
+        # Makes extended mission cadence similar to nominal mission
+        n = (len(flux) // 3) * 3
+        time = time[:n].reshape(-1, 3).mean(axis=1)
+        flux = flux[:n].reshape(-1, 3).mean(axis=1)
+    outlier_mask = sigma_clip(flux, sigma_lower=cfg.sigma_clip_lower, sigma_upper=cfg.sigma_clip_upper).mask
     time, flux = time[~outlier_mask], flux[~outlier_mask]
     if len(flux) == 0:
         raise ValueError("Light curve is empty after removing outliers.")
-    time, flux = detrend_light_curve(time, flux, detrend_sigma=detrend_sigma, mode='reflect')
+    # Is detrending redundant when calibrated time series are used?
+    # Also this detrending assumes regular sampling
+    time, flux = detrend_light_curve(time, flux, smooth_sigma=cfg.detrend_sigma, mode=cfg.detrend_mode)
     return time, flux
 
-def smooth_time_series(time_series: np.ndarray, sigma: float, mode: str = 'nearest') -> np.ndarray:
+def smooth_time_series(time_series: np.ndarray, sigma: float, mode: str) -> np.ndarray:
     '''
     A helper function to do Gaussian smoothing with a filter.
     '''
     smoothed_series = gaussian_filter1d(time_series, sigma=sigma, mode=mode)
     return smoothed_series
 
-def detrend_light_curve(time: np.ndarray, flux: np.ndarray, detrend_sigma, mode: str = 'nearest') -> tuple[np.ndarray, np.ndarray]:
+def detrend_light_curve(time: np.ndarray, flux: np.ndarray, smooth_sigma: float, mode: str) -> tuple[np.ndarray, np.ndarray]:
     '''
     A helper function to processes the light curve by detrending with a Gaussian filter.
-    '''    
-    smoothed = smooth_time_series(flux, sigma=detrend_sigma, mode=mode)
+    '''
+    smoothed = smooth_time_series(flux, sigma=smooth_sigma, mode=mode)
     detrended_flux = flux[:len(smoothed)] - smoothed
     detrended_time = time[:len(detrended_flux)]
     return detrended_time, detrended_flux + np.mean(flux)

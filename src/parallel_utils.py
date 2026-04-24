@@ -2,17 +2,19 @@ from typing import Any, Callable
 import polars as pl
 from joblib import Parallel, delayed
 
+from extractors import ExtractorFn
+
+
 def extract_in_parallel(
     df: pl.DataFrame,
-    extractor_fn: Callable[[pl.DataFrame], dict[str, Any]],
+    extractor_fn: ExtractorFn,
     *,
     n_jobs: int,
     backend: str,
     worker_batch_size: int,
 ) -> tuple[pl.DataFrame, list[dict[str, Any]]]:
-    #def _extract_many(df_slice) -> list[dict[str, Any]]:
-    #    return [extractor_fn(df_slice.slice(i, 1)) for i in range(len(df_slice))]
-    def _extract_many(df_slice: pl.DataFrame) -> tuple[pl.DataFrame | None, list[dict[str, Any]]]:
+
+    def _extract_many(df_slice: pl.DataFrame) -> tuple[pl.DataFrame, list[dict[str, Any]]]:
         successes, errors = [], []
         for i in range(len(df_slice)):
             result = extractor_fn(df_slice.slice(i, 1))

@@ -9,6 +9,7 @@ import polars as pl
 from parallel_utils import extract_in_parallel
 from extractors import ExtractorFn, extract_features_from_slice, extract_light_curve_from_slice
 from eta_estimator import ETAEstimator
+from config import PipelineConfig
 
 
 def parquet_num_rows(parquet_path: str | Path) -> int:
@@ -63,7 +64,7 @@ def process_parquet(
             log.info(f"File {save_dir} exists, skipping.")
             return
         log.info(f"Reading {parquet_path}")
-        batch = pl.read_parquet(parquet_path)#.to_dicts()
+        batch = pl.read_parquet(parquet_path)
         results, errors = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
         report_errors(errors, len(batch))
         results.write_parquet(save_dir)
@@ -107,20 +108,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("mode", choices=("preparation", "training", "inference"), help="Whether to run on the training set or inference set.")
     p.add_argument("input", type=Path, help="In training: Path to a single parquet. In inference: Path to a directory containing of parquets.")
     p.add_argument("output", type=Path, help="Directory to save the extracted features")
+    p.add_argument("--config", type=Path, default=None, help="Path to pipeline config JSON. Uses default config if not provided.")
     p.add_argument("--n-jobs", type=int, default=8)
     p.add_argument("--backend", choices=("threading", "loky"), default="loky", help="joblib backend")
     p.add_argument("--flux-type", choices=("psf", "aper"), default="aper", help="Flux columns to extract from FITS files.")
-    p.add_argument("--use-uncalibrated", action=argparse.BooleanOptionalAction, default=False, help="Flag to use uncalibrated aperture/psf time series.")
     p.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=False, help="Overwrite existing output part files.")
     return p.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
     logging.basicConfig(
-        level=getattr(logging, "INFO"),
+        level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
     log = logging.getLogger("features")
+    cfg = PipelineConfig.from_json(args.config) if args.config else PipelineConfig()
+    log.info(f"Config: {cfg}")
 
     def run(fn: Callable, extractor: ExtractorFn, out_dir: Path) -> None:
         fn(
@@ -136,11 +139,11 @@ if __name__ == "__main__":
             lc_extractor_fn = partial(extract_light_curve_from_slice, flux_type=args.flux_type)
             run(process_parquets_recursive, lc_extractor_fn, args.output / 'light_curves')
         case 'inference':
-            feat_extractor_fn = partial(extract_features_from_slice, uncalibrated_flux=args.use_uncalibrated)
+            feat_extractor_fn = partial(extract_features_from_slice, cfg=cfg)
             run(process_parquets_recursive, feat_extractor_fn, args.output / 'features')
         case 'training':
-            feat_extractor_fn = partial(extract_features_from_slice, uncalibrated_flux=args.use_uncalibrated)
+            feat_extractor_fn = partial(extract_features_from_slice, cfg=cfg)
             run(process_parquets_recursive, feat_extractor_fn, args.output / 'features' / args.input.name)
-        case '_':
+        case _:
             raise ValueError('Invalid mode')
 
