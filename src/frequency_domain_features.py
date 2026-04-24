@@ -7,8 +7,8 @@ def frequency_grid(fmin: float, fmax: float, fres: float) -> np.ndarray:
     Nf = int((fmax - fmin) / fres)
     return fmin + np.arange(Nf) * fres
 
-def lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, fmin: float, fmax: float, fres: float) -> np.ndarray:
-    return finufft.lombscargle(t=time, y=flux, nthreads=1, fmin=fmin, df=fres, Nf=int((fmax-fmin)/fres))
+def lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, fmin: float, fmax: float, fres: float, normalization: str = 'standard') -> np.ndarray:
+    return finufft.lombscargle(t=time, y=flux, nthreads=1, fmin=fmin, df=fres, Nf=int((fmax-fmin)/fres), normalization=normalization)
 
 def baluev_false_alarm_probability(power_level: float, time: np.ndarray, flux: np.ndarray, fmin: float, fmax: float) -> np.ndarray:
     ls = LombScargle(time, flux, normalization='standard')
@@ -38,13 +38,25 @@ def find_top_k_peaks_window_fast(x: np.ndarray, k: int, w: int) -> np.ndarray:
     order = np.argsort(x[peak_idx])[::-1]
     return peak_idx[order[:k]]
 
-def compute_lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10.0) -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
+def compute_lombscargle_periodogram(time: np.ndarray, flux: np.ndarray, oversampling_factor: float = 10.0, normalization: str = 'standard') -> tuple[np.ndarray, np.ndarray, tuple[float, float, float]]:
     delta_time = np.median(time[1:] - time[:-1])
     time_span = time[-1] - time[0]
     fmin, fmax, fres = 1/time_span, 0.5/delta_time, 1/(oversampling_factor * time_span)
     freqs = frequency_grid(fmin, fmax, fres)
-    ampl = lombscargle_periodogram(time, flux, fmin, fmax, fres)
+    ampl = lombscargle_periodogram(time, flux, fmin, fmax, fres, normalization=normalization)
     return freqs, ampl, (fmin, fmax, fres)
+
+def fine_tune_lombscargle_peak(time: np.ndarray, flux: np.ndarray, fcenter: float, fmin: float, fmax: float, fres: float, finetune_oversampling_factor: float = 10):
+    f_lo = max(fmin, fcenter - fres)
+    f_hi = min(fmax, fcenter + fres)
+    fres_ft = fres / finetune_oversampling_factor
+    # Compute refined local periodogram
+    ampl_ref = lombscargle_periodogram(time, flux, f_lo, f_hi, fres_ft)
+    freqs_ref = frequency_grid(f_lo, f_hi, fres_ft)
+    jmax = int(np.argmax(ampl_ref))
+    amax = ampl_ref[jmax]
+    fmax_local = freqs_ref[jmax]
+    return fmax_local, amax
 
 def spectral_entropy(power: np.ndarray, eps: float = 1e-12) -> float:
     total_power = power.sum()
@@ -69,51 +81,39 @@ def periodogram_features(
     flux: np.ndarray,
     oversampling_factor: float = 10.,
     finetune_oversampling_factor: float = 10.,
-    num_peaks_for_peak_structure: int = 3
+    #num_peaks_for_peak_structure: int = 3
 ) -> dict[str, float]:
     freqs, ampl, (fmin, fmax, fres) = compute_lombscargle_periodogram(time, flux, oversampling_factor=oversampling_factor)
     # Fine tune highest peaks
-    peak_idx = find_top_k_peaks_window_fast(ampl, k=max(10, num_peaks_for_peak_structure+1), w=int(2*oversampling_factor))
-    fres_ft = fres / finetune_oversampling_factor
+    peak_idx = find_top_k_peaks_window_fast(ampl, k=10, w=int(2*oversampling_factor))
     for idx in peak_idx:
-        f0 = freqs[idx]
-        f_lo = max(fmin, f0 - fres)
-        f_hi = min(fmax, f0 + fres)
-        # Compute refined local periodogram
-        ampl_ref = lombscargle_periodogram(time, flux, f_lo, f_hi, fres_ft)
-        freqs_ref = frequency_grid(f_lo, f_hi, fres_ft)
-        jmax = int(np.argmax(ampl_ref))
-        amax = ampl_ref[jmax]
-        fmax_local = freqs_ref[jmax]
-        #print(idx, f_lo, f_hi, f0, fmax_local, ampl[idx], amax)
+        fmax_local, amax = fine_tune_lombscargle_peak(time, flux, freqs[idx], fmin, fmax, fres, finetune_oversampling_factor)
         ampl[idx] = amax
         freqs[idx] = fmax_local
-    peak_idx = peak_idx[np.argsort(ampl[peak_idx])[::-1]] # Sort in amplitude decreasing order
     periodogram_metrics = {
         'ls_entropy': spectral_entropy(ampl).item(),
         'ls_flatness': spectral_flatness(ampl).item(),
     }
+    peak_idx = peak_idx[np.argsort(ampl[peak_idx])[::-1]] # Sort in amplitude decreasing order
     fundamental_idx = peak_idx[0]
     ampl_fundamental = ampl[fundamental_idx]
     fundamental_fap = baluev_false_alarm_probability(ampl_fundamental, time, flux, fmin, fmax)
     eps = np.finfo(float).tiny
-    fap_clipped = eps if fundamental_fap < eps else fundamental_fap     
-    fundamental_frequency = {
-        'ls_frequency_fundamental': freqs[fundamental_idx].item(), 
-        'ls_amplitude_fundamental': ampl_fundamental.item(),
-        'ls_fap_fundamental': fap_clipped.item()
-    }
-    half_fundamental_idx = np.argmin(np.abs(freqs - freqs[fundamental_idx]/2))
-    peak_structure = {
-        'ls_amplitude_ratio_half_fundamental': (ampl[half_fundamental_idx]/ampl_fundamental).item(),
-    }
-    for i, p in enumerate(peak_idx[1:num_peaks_for_peak_structure+1]):
-        harm_k, harm_dist = find_harmonic_relation(freqs[p], freqs[fundamental_idx])
-        peak_structure[f'ls_frequency_top{i+2}'] = freqs[p].item()
-        peak_structure[f'ls_amplitude_ratio_top{i+2}_fundamental'] = (ampl[p]/ampl_fundamental).item()
-        peak_structure[f'ls_distance_to_fundamental_harmonic_top{i+2}'] = harm_dist.item()
-        peak_structure[f'ls_closest_harmonic_top{i+2}'] = harm_k.item()
-    return {**fundamental_frequency, **periodogram_metrics, **peak_structure}
+    fap_clipped = eps if fundamental_fap < eps else fundamental_fap   
+    half_dominant_idx = np.argmin(np.abs(freqs - freqs[fundamental_idx]/2))
+    dominant_frequency = {
+        'ls_frequency_dominant': freqs[fundamental_idx].item(), 
+        'ls_amplitude_dominant': ampl_fundamental.item(),
+        'ls_fap_dominant': fap_clipped.item(),
+        'ls_amplitude_ratio_half_dominant': (ampl[half_dominant_idx]/ampl_fundamental).item(),
+    }    
+    #for i, p in enumerate(peak_idx[1:num_peaks_for_peak_structure+1]):
+    #    harm_k, harm_dist = find_harmonic_relation(freqs[p], freqs[fundamental_idx])
+    #    peak_structure[f'ls_frequency_top{i+2}'] = freqs[p].item()
+    #    peak_structure[f'ls_amplitude_ratio_top{i+2}_fundamental'] = (ampl[p]/ampl_fundamental).item()
+    #    peak_structure[f'ls_distance_to_fundamental_harmonic_top{i+2}'] = harm_dist.item()
+    #    peak_structure[f'ls_closest_harmonic_top{i+2}'] = harm_k.item()
+    return {**dominant_frequency, **periodogram_metrics}
 
 def fourier_series_design_matrix(time: np.ndarray, fundamental_frequency: float, num_components: int) -> np.ndarray:
     omegat = 2 * np.pi * fundamental_frequency * time

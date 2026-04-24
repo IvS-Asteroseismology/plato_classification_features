@@ -1,50 +1,24 @@
 from collections import Counter
 from pathlib import Path
 from functools import partial
-from typing import Iterator, Any, Callable
+from typing import Any, Callable
 import argparse
 import logging
 import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from parallel_utils import extract_in_parallel
-from extractors import ExtractorFn, extract_features_from_row, extract_light_curve_from_row
+from extractors import ExtractorFn, extract_features_from_slice, extract_light_curve_from_slice
 from eta_estimator import ETAEstimator
 
 
-def iter_parquet_column(
-        parquet_path: Path | str, 
-        *, 
-        batch_rows: int, 
-        cols: list[str] | None = None,
-) -> Iterator[list[dict[str, Any]]]:
-    pf = pq.ParquetFile(parquet_path)
-    for batch in pf.iter_batches(columns=cols, batch_size=batch_rows):
-        yield batch.to_pylist()
-
 def parquet_num_rows(parquet_path: str | Path) -> int:
-    pf = pq.ParquetFile(parquet_path)
-    return pf.metadata.num_rows
+    return pl.scan_parquet(parquet_path).select(pl.len()).collect().item()
 
-def write_parquet_part(rows: list[dict[str, Any]], out_path: Path) -> None:
-    table = pa.Table.from_pylist(rows)
-    pq.write_table(table, out_path)
-
-def prefix_key(p: str, keep_parts: int = 10) -> str:
-    # ['', 'STER','mamsie','tess','TIC','plato_fov','s0001','cam3-ccd4','0046','7448', ...]
-    parts = p.split('/')
-    return '/'.join(parts[:keep_parts])
-
-def remove_and_report_errors(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    failed = [row for row in rows if '_error' in row]
-    if len(failed) > 0:
-        log.error(f"{len(failed)}/{len(rows)} files failed")
-        errors = [row['_error'] for row in failed]
-        cerrors = Counter(errors)
-        for reason, count in cerrors.items():
+def report_errors(errors: list[dict[str, Any]], total: int) -> None:
+    if errors:
+        log.error(f"{len(errors)}/{total} files failed")
+        for reason, count in Counter(e["_error"] for e in errors).items():
             log.error(f"\t {reason}: {count}")
-    return [row for row in rows if '_error' not in row]
 
 def process_parquet(
         parquet_path: Path,
@@ -54,7 +28,7 @@ def process_parquet(
         overwrite: bool, 
         joblib_backend: str, 
         batch_rows: int = 20_000, 
-        worker_batch: int = 20, 
+        worker_batch: int = 100, 
         log_every_batches: int = 1,
 ) -> None:
     if not parquet_path.exists():
@@ -72,15 +46,15 @@ def process_parquet(
         if not save_dir.suffix == "": # Parquet name will become the directory name
             save_dir = save_dir.with_suffix("")
             save_dir.mkdir(parents=True, exist_ok=True)
-        for part_id, batch in enumerate(iter_parquet_column(parquet_path, batch_rows=batch_rows)):
+        df = pl.read_parquet(parquet_path)
+        for part_id, batch in enumerate(df.iter_slices(n_rows=batch_rows)):
             out_path = save_dir / f"part-{part_id:06d}.parquet"
             if out_path.exists() and not overwrite:
                 eta.update(len(batch))
                 continue
-            # batch.sort(key=lambda p: prefix_key(p, keep_parts=10))
-            rows = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
-            rows = remove_and_report_errors(rows)
-            write_parquet_part(rows, out_path)
+            results, errors = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
+            report_errors(errors, len(batch))
+            results.write_parquet(out_path)
             eta.update(len(batch))
             if (part_id + 1) % log_every_batches == 0:
                 log.info(f"part {part_id}, progress {eta.fmt()}")
@@ -89,10 +63,10 @@ def process_parquet(
             log.info(f"File {save_dir} exists, skipping.")
             return
         log.info(f"Reading {parquet_path}")
-        batch = pl.read_parquet(parquet_path).to_dicts()
-        rows = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
-        rows = remove_and_report_errors(rows)
-        write_parquet_part(rows, save_dir)
+        batch = pl.read_parquet(parquet_path)#.to_dicts()
+        results, errors = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
+        report_errors(errors, len(batch))
+        results.write_parquet(save_dir)
         eta.update(len(batch))
     log.info(f"Directory done. {eta.fmt()}")
 
@@ -110,7 +84,14 @@ def process_parquets_recursive(parquet_path_or_dir: Path, extractor_fn: Extracto
             else:
                 out_dir = save_dir / rel_parent
             print(out_dir)
-            process_parquet(parquet_path=parquet_path, extractor_fn=extractor_fn, save_dir=out_dir, n_jobs=n_jobs, overwrite=overwrite, joblib_backend=joblib_backend)
+            process_parquet(
+                parquet_path=parquet_path, 
+                extractor_fn=extractor_fn, 
+                save_dir=out_dir, 
+                n_jobs=n_jobs, 
+                overwrite=overwrite, 
+                joblib_backend=joblib_backend
+            )
     elif parquet_path_or_dir.is_file(): 
         if parquet_path_or_dir.suffix != '.parquet':
             raise ValueError(f"Expected a .parquet file, got {parquet_path_or_dir}")
@@ -129,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-jobs", type=int, default=8)
     p.add_argument("--backend", choices=("threading", "loky"), default="loky", help="joblib backend")
     p.add_argument("--flux-type", choices=("psf", "aper"), default="aper", help="Flux columns to extract from FITS files.")
-    p.add_argument("--uncalibrated", action=argparse.BooleanOptionalAction, default=False, help="Flag to use uncalibrated aperture/psf time series.")
+    p.add_argument("--use-uncalibrated", action=argparse.BooleanOptionalAction, default=False, help="Flag to use uncalibrated aperture/psf time series.")
     p.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=False, help="Overwrite existing output part files.")
     return p.parse_args()
 
@@ -152,13 +133,14 @@ if __name__ == "__main__":
         )
     match args.mode:
         case 'preparation':
-            lc_extractor_fn = partial(extract_light_curve_from_row, flux_type=args.flux_type)
+            lc_extractor_fn = partial(extract_light_curve_from_slice, flux_type=args.flux_type)
             run(process_parquets_recursive, lc_extractor_fn, args.output / 'light_curves')
         case 'inference':
-            feat_extractor_fn = partial(extract_features_from_row, uncalibrated_flux=args.uncalibrated)
+            feat_extractor_fn = partial(extract_features_from_slice, uncalibrated_flux=args.use_uncalibrated)
             run(process_parquets_recursive, feat_extractor_fn, args.output / 'features')
         case 'training':
-            run(process_parquets_recursive, extract_features_from_row, args.output / 'features' / args.input.name)
+            feat_extractor_fn = partial(extract_features_from_slice, uncalibrated_flux=args.use_uncalibrated)
+            run(process_parquets_recursive, feat_extractor_fn, args.output / 'features' / args.input.name)
         case '_':
             raise ValueError('Invalid mode')
 
