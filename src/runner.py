@@ -12,6 +12,9 @@ from eta_estimator import ETAEstimator
 from config import PipelineConfig
 
 
+log = logging.getLogger(__name__)
+
+
 def parquet_num_rows(parquet_path: str | Path) -> int:
     return pl.scan_parquet(parquet_path).select(pl.len()).collect().item()
 
@@ -21,15 +24,17 @@ def report_errors(errors: list[dict[str, Any]], total: int) -> None:
         for reason, count in Counter(e["_error"] for e in errors).items():
             log.error(f"\t {reason}: {count}")
 
+def normalize_columns(df: pl.DataFrame) -> pl.DataFrame:
+    if "FilePath" in df.columns:
+        return df.rename({"FilePath": "path"})
+    return df
+    
 def process_parquet(
         parquet_path: Path,
-        extractor_fn: ExtractorFn,
+        parallel_extractor: Callable,
         save_dir: Path, 
-        n_jobs: int, 
         overwrite: bool, 
-        joblib_backend: str, 
         batch_rows: int = 20_000, 
-        worker_batch: int = 100, 
         log_every_batches: int = 1,
 ) -> None:
     if not parquet_path.exists():
@@ -37,67 +42,53 @@ def process_parquet(
     total_rows = parquet_num_rows(parquet_path)
     eta = ETAEstimator(total=total_rows)
     log.info(f"Parquet {parquet_path.name}: {total_rows} rows")
-    if not save_dir.suffix == "": # Note: is_file() does not work if file does not exist so we check suffix instead
-        save_dir.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        save_dir.mkdir(parents=True, exist_ok=True)
-    parallel_extractor = partial(extract_in_parallel, extractor_fn=extractor_fn)
-    
+    df = normalize_columns(pl.read_parquet(parquet_path))
     if total_rows > batch_rows:
-        if not save_dir.suffix == "": # Parquet name will become the directory name
-            save_dir = save_dir.with_suffix("")
-            save_dir.mkdir(parents=True, exist_ok=True)
-        df = pl.read_parquet(parquet_path)
+        save_dir.mkdir(parents=True, exist_ok=True)
         for part_id, batch in enumerate(df.iter_slices(n_rows=batch_rows)):
             out_path = save_dir / f"part-{part_id:06d}.parquet"
             if out_path.exists() and not overwrite:
                 eta.update(len(batch))
                 continue
-            results, errors = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
+            results, errors = parallel_extractor(batch)
             report_errors(errors, len(batch))
             results.write_parquet(out_path)
             eta.update(len(batch))
             if (part_id + 1) % log_every_batches == 0:
                 log.info(f"part {part_id}, progress {eta.fmt()}")
     else:
-        if save_dir.exists() and save_dir.is_file() and not overwrite:
-            log.info(f"File {save_dir} exists, skipping.")
+        out_path = save_dir.with_suffix(".parquet")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and not overwrite:
+            log.info(f"{out_path} exists, skipping.")
             return
         log.info(f"Reading {parquet_path}")
-        batch = pl.read_parquet(parquet_path)
-        results, errors = parallel_extractor(batch, n_jobs=n_jobs, backend=joblib_backend, worker_batch_size=worker_batch)
-        report_errors(errors, len(batch))
-        results.write_parquet(save_dir)
-        eta.update(len(batch))
+        results, errors = parallel_extractor(df)
+        report_errors(errors, df.height)
+        results.write_parquet(out_path)
+        eta.update(df.height)
     log.info(f"Directory done. {eta.fmt()}")
 
-def process_parquets_recursive(parquet_path_or_dir: Path, extractor_fn: ExtractorFn, save_dir: Path, n_jobs: int, overwrite: bool, joblib_backend: str) -> None:
-    if parquet_path_or_dir.is_dir(): # Search for parquets recursively
-        parquets = sorted(parquet_path_or_dir.rglob("*.parquet"))
+def process_parquets_recursive(
+    input_path: Path, 
+    parallel_extractor: Callable, 
+    save_dir: Path, 
+    overwrite: bool, 
+) -> None:
+    if input_path.is_dir(): # Search for parquets recursively
+        parquets = sorted(input_path.rglob("*.parquet"))
         if not parquets:
-            raise FileNotFoundError(f"No parquets found under directory {parquet_path_or_dir}")
+            raise FileNotFoundError(f"No parquets found under directory {input_path}")
         log.info("Found %d parquet(s).", len(parquets))
         for parquet_path in parquets:
-            rel_parent = parquet_path.relative_to(parquet_path_or_dir)
-            print(rel_parent)
-            if rel_parent == Path("."):
-                out_dir = save_dir / parquet_path.stem
-            else:
-                out_dir = save_dir / rel_parent
-            print(out_dir)
-            process_parquet(
-                parquet_path=parquet_path, 
-                extractor_fn=extractor_fn, 
-                save_dir=out_dir, 
-                n_jobs=n_jobs, 
-                overwrite=overwrite, 
-                joblib_backend=joblib_backend
-            )
-    elif parquet_path_or_dir.is_file(): 
-        if parquet_path_or_dir.suffix != '.parquet':
-            raise ValueError(f"Expected a .parquet file, got {parquet_path_or_dir}")
-        out_dir = save_dir / parquet_path_or_dir.stem
-        process_parquet(parquet_path=parquet_path_or_dir, extractor_fn=extractor_fn, save_dir=out_dir, n_jobs=n_jobs, overwrite=overwrite, joblib_backend=joblib_backend)
+            rel = parquet_path.relative_to(input_path)
+            out_dir = save_dir / rel.parent / rel.stem
+            process_parquet(parquet_path, parallel_extractor=parallel_extractor, save_dir=out_dir, overwrite=overwrite)
+    elif input_path.is_file(): 
+        if input_path.suffix != '.parquet':
+            raise ValueError(f"Expected a .parquet file, got {input_path}")
+        out_dir = save_dir / input_path.stem
+        process_parquet(input_path, parallel_extractor=parallel_extractor, save_dir=out_dir, overwrite=overwrite)
     else:
         raise FileNotFoundError(f"Path does not exist: {parquet_path_or_dir}")
 
@@ -121,29 +112,25 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
-    log = logging.getLogger("features")
     cfg = PipelineConfig.from_json(args.config) if args.config else PipelineConfig()
     log.info(f"Config: {cfg}")
 
-    def run(fn: Callable, extractor: ExtractorFn, out_dir: Path) -> None:
-        fn(
-            args.input,
-            extractor,
-            out_dir,
-            n_jobs=args.n_jobs,
-            overwrite=args.overwrite,
-            joblib_backend=args.backend,
-        )
     match args.mode:
         case 'preparation':
-            lc_extractor_fn = partial(extract_light_curve_from_slice, flux_type=args.flux_type)
-            run(process_parquets_recursive, lc_extractor_fn, args.output / 'light_curves')
+            extractor = partial(extract_light_curve_from_slice, flux_type=args.flux_type)
+            output_dir = args.output / 'light_curves'            
         case 'inference':
-            feat_extractor_fn = partial(extract_features_from_slice, cfg=cfg)
-            run(process_parquets_recursive, feat_extractor_fn, args.output / 'features')
+            extractor = partial(extract_features_from_slice, cfg=cfg)
+            output_dir = args.output / 'features'
         case 'training':
-            feat_extractor_fn = partial(extract_features_from_slice, cfg=cfg)
-            run(process_parquets_recursive, feat_extractor_fn, args.output / 'features' / args.input.name)
+            extractor = partial(extract_features_from_slice, cfg=cfg)
+            output_dir = args.output / 'features' / args.input.name
         case _:
             raise ValueError('Invalid mode')
+    parallel_extractor = partial(
+        extract_in_parallel, 
+        extractor_fn=extractor, 
+        n_jobs=args.n_jobs, backend=args.backend, worker_batch_size=100
+    )
+    process_parquets_recursive(args.input, parallel_extractor, output_dir, args.overwrite)
 

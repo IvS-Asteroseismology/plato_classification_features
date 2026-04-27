@@ -44,7 +44,6 @@ def extract_features_from_path(
     return {'path': lc['path']} | feats
 
 def extract_light_curve_from_slice(df_slice: pl.DataFrame, flux_type: str) -> dict[str, Any]:
-    # FilePath or path
     path = df_slice['path'].item()
     return extract_light_curve_from_path(path, flux_type=flux_type)
 
