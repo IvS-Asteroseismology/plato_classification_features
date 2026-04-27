@@ -2,7 +2,8 @@ from dataclasses import dataclass
 
 from time_domain_features import max_slope, flux_statistics, autocorrelation_features
 from barbara_kepler_features import barbara_features
-from frequency_domain_features import periodogram_features, fourier_series_features
+from periodogram_features import periodogram_features
+from fourier_series_features import fourier_series_features
 
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
