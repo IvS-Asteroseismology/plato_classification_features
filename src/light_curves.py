@@ -74,9 +74,25 @@ class PreprocessingConfig:
     use_calibrated_flux: bool = True
     sigma_clip_lower: float = 10.0
     sigma_clip_upper: float = 5.0
-    bin_extended_mission_cadence: bool = True
+    filter_short_segments: bool = True
+    min_segment_duration: float = 1.0
+    gap_threshold_factor: float = 5.0
+    bin_extended_mission_cadence: bool = False
+    detrend: bool = False
     detrend_sigma: float = 100
     detrend_mode: str = 'reflect'
+
+def find_segments(time: np.ndarray, gap_threshold_factor: float) -> tuple[list[np.ndarray], float]:
+    dt = np.diff(time)
+    median_cadence = np.median(dt)
+    gap_indices = np.where(dt > gap_threshold_factor * median_cadence)[0]
+    boundaries = np.concatenate([[0], gap_indices + 1, [len(time)]])
+    masks = []
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        mask = np.zeros(len(time), dtype=bool)
+        mask[start:end] = True
+        masks.append(mask)
+    return masks, median_cadence
 
 def preprocess_lc(
     time: np.ndarray,
@@ -86,9 +102,20 @@ def preprocess_lc(
 ) -> tuple[np.ndarray, np.ndarray]:
     good_mask = ~np.isnan(flux) & ~np.isinf(flux)
     if not np.any(good_mask):
-        raise ValueError("A light curve contains too many NaN values.")
+        raise ValueError("Light curve contains too many NaN values.")
     time = time[good_mask]
     flux = flux[good_mask]
+    if cfg.filter_short_segments:
+        segment_masks, _ = find_segments(time, cfg.gap_threshold_factor)
+        keep = np.zeros(len(time), dtype=bool)
+        for mask in segment_masks:
+            t_seg = time[mask]
+            duration = t_seg[-1] - t_seg[0]
+            if duration >= cfg.min_segment_duration:
+                keep |= mask
+        time, flux = time[keep], flux[keep]
+        if len(flux) == 0:
+            raise ValueError("Light curve is empty after removing short segments.")
     if cfg.bin_extended_mission_cadence and sector is not None and sector >= 27 and len(flux) >= 3:
         # Makes extended mission cadence similar to nominal mission
         n = (len(flux) // 3) * 3
@@ -99,8 +126,9 @@ def preprocess_lc(
     if len(flux) == 0:
         raise ValueError("Light curve is empty after removing outliers.")
     # Is detrending redundant when calibrated time series are used?
-    # Also this detrending assumes regular sampling
-    time, flux = detrend_light_curve(time, flux, smooth_sigma=cfg.detrend_sigma, mode=cfg.detrend_mode)
+    if cfg.detrend:
+        # This detrending assumes regular sampling
+        time, flux = detrend_light_curve(time, flux, smooth_sigma=cfg.detrend_sigma, mode=cfg.detrend_mode)
     return time, flux
 
 def smooth_time_series(time_series: np.ndarray, sigma: float, mode: str) -> np.ndarray:

@@ -3,31 +3,34 @@ from dataclasses import dataclass
 from time_domain_features import max_slope, flux_statistics, autocorrelation_features
 from barbara_kepler_features import barbara_features
 from periodogram_features import periodogram_features
-from fourier_series_features import fourier_series_features
+from prewhitening_features import prewhiten, prewhitening_features
 
 @dataclass(frozen=True)
 class FeatureExtractorConfig:
+    # Periodogram config
     oversampling_factor: float = 5.0
-    n_harmonics: int = 4
+    finetune_factor: float = 10.0
+    peak_max_fap_level: float = 0.01
+    # Autocorrelation config
     max_lag_days: float = 4.0
-    return_relative_fourier_amplitudes = True
+    # Prewhitening config
+    num_harmonics: int = 10
+    num_prewithening_iterations: int = 3
+    half_frequency_detection_threshold: float = 0.1
 
-feature_types = float | str
 
-def extract_features(time, flux, cfg: FeatureExtractorConfig) -> dict[str, feature_types]:
+def extract_features(time, flux, cfg: FeatureExtractorConfig) -> dict[str, float]:
     # NOTE: This assumes that time and flux have already been sanitized
-    # First order features: No dependencies
-    fof = {}
-    fof.update(flux_statistics(flux))
-    fof.update(max_slope(time, flux))
-    fof.update(autocorrelation_features(time, flux, cfg.max_lag_days))
-    fof.update(barbara_features(time, flux))
-    fof.update(periodogram_features(time, flux, oversampling_factor=cfg.oversampling_factor))
-    # Second order features: Depend on first order results
-    f0 = fof["ls_frequency_dominant"]
-    sof = {}
-    sof.update(fourier_series_features(
-        time, flux, fundamental_frequency=f0, 
-        num_components=cfg.n_harmonics, return_relative_amplitudes=cfg.return_relative_fourier_amplitudes,
-    ))
-    return {**fof, **sof}
+    feats = {}
+    feats.update(flux_statistics(flux))
+    feats.update(max_slope(time, flux))
+    feats.update(autocorrelation_features(time, flux, cfg.max_lag_days))
+    feats.update(barbara_features(time, flux))
+    prewhitening_result, periodogram_features = prewhiten(
+        time, flux,
+        num_components=cfg.num_harmonics, num_iterations=cfg.num_prewithening_iterations, ratio_threshold=cfg.half_frequency_detection_threshold,
+        oversampling_factor=cfg.oversampling_factor, finetune_factor=cfg.finetune_factor, peak_density_maximum_fap=cfg.peak_max_fap_level,
+    )
+    feats.update(periodogram_features[0]) # The full periodogram features of the first component
+    feats.update(prewhitening_features(prewhitening_result))
+    return feats

@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.signal import find_peaks, find_peaks_cwt
 
+from light_curves import find_segments
+
 
 def flux_statistics(flux: np.ndarray) -> dict[str, float]:
     N = len(flux)
@@ -66,25 +68,17 @@ def _acf_fft_segment(x: np.ndarray, max_lag: int, center: str = 'median', scale:
         return None
     return ac / ac[0]
 
-def _split_by_time_gaps(t: np.ndarray, gap_factor: float) -> tuple[list[tuple[int, int]], float]:
-    dt = np.diff(t)
-    dt_nom = np.median(dt[np.isfinite(dt)])
-    if not np.isfinite(dt_nom) or dt_nom <= 0:
-        return [(0, t.size)]
-    breaks = np.where(dt > gap_factor * dt_nom)[0]
-    starts = np.r_[0, breaks + 1]
-    ends = np.r_[breaks + 1, t.size]
-    return list(zip(starts, ends)), dt_nom
-
 def acf_fft_from_time_flux(time, flux, max_lag_days, gap_factor=15, center='median', scale='mad'):
-    segments, dt_nom = _split_by_time_gaps(time, gap_factor=gap_factor)
-    if np.all(np.array([time[end-1]-time[start] for start, end in segments]) < max_lag_days):
+    #segments, dt_nom = _split_by_time_gaps(time, gap_factor=gap_factor)
+    segments, dt_nom = find_segments(time, gap_factor)
+    duration = lambda t: t[-1] - t[0]
+    if all([duration(time[s]) < max_lag_days for s in segments]):
         raise ValueError('Cannot compute acf, all segments are shorter than the desired maximum lag')
     max_lag = int(np.round(max_lag_days / dt_nom))
     rhos = []
     weights = []
-    for start, end in segments:
-        segment_flux = flux[start:end]
+    for mask in segments:
+        segment_flux = flux[mask]
         if segment_flux.size < max_lag + 1:
             continue
         rho = _acf_fft_segment(segment_flux, max_lag=max_lag, center=center, scale=scale)
