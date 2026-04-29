@@ -20,7 +20,7 @@ def extract_features_from_light_curve(time: np.ndarray, flux: np.ndarray, sector
     except Exception as e:
         return {"_error": f"preprocessing error: {e}"}
     try:
-        feats = extract_features(time, flux, cfg.features)
+        feats = extract_features(time, flux, sector, cfg.features)
     except Exception as e:
         return {"_error": f"feature error: {e}"}
     feats["num_negative_fluxes"] = np.sum(flux<0.0).item()

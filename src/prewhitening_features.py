@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import numpy as np
 from matplotlib import pyplot as plt
 
-from periodogram_features import periodogram_features, compute_periodogram
+from periodogram_features import periodogram_features, compute_periodogram, SUBHARMONIC_LABELS
 
 
 def fourier_design_matrix(
@@ -21,6 +21,16 @@ def fit_fourier_series(time: np.ndarray, flux: np.ndarray, frequency: float, num
     X = fourier_design_matrix(time, frequency, num_components)
     theta, sum_squared_residuals, _, _ = np.linalg.lstsq(X, flux, rcond=None)
     return theta, sum_squared_residuals
+
+def resolve_fundamental(periodogram_results: dict[str, float], ratio_threshold: float) -> float:
+    dominant = periodogram_results["ls_frequency_dominant"]
+    for divisor, label in SUBHARMONIC_LABELS.items():
+        subharmonic_amplitude = periodogram_results[f"ls_amplitude_ratio_{label}_dominant"]
+        subharmonic_is_significant = periodogram_results[f"ls_amplitude_is_significant_{label}_dominant"]
+        subharmonic_is_local_max = periodogram_results[f"ls_is_local_max_{label}_dominant"]
+        if subharmonic_amplitude > ratio_threshold and subharmonic_is_significant and subharmonic_is_local_max:
+            return dominant / divisor
+    return dominant
 
 @dataclass
 class PrewhiteningComponent:
@@ -44,8 +54,7 @@ def prewhiten(
                 peak_density_maximum_fap=peak_density_maximum_fap,
         )
         pfs.append(pf)
-        dominant = pf["ls_frequency_dominant"]
-        freq = dominant / 2 if pf["ls_amplitude_ratio_half_dominant"] > ratio_threshold else dominant
+        freq = resolve_fundamental(pf, ratio_threshold) 
         theta, _ = fit_fourier_series(time, residual, freq, num_components)
         variance_before = np.var(residual)
         residual = residual - np.dot(fourier_design_matrix(time, freq, num_components), theta)
@@ -103,6 +112,7 @@ def plot_prewhitening(
     n_components: int,
     freq_xlim: float = 5.0,
     oversampling_factor: float = 5.0,
+    normalization='standard',
 ) -> plt.Figure:
     n_iter = len(components)
     fig, axes = plt.subplots(n_iter + 1, 2, figsize=(14, 3 * (n_iter + 1)), constrained_layout=True)
@@ -117,7 +127,7 @@ def plot_prewhitening(
             fourier_design_matrix(phase_time / comp.frequency, comp.frequency, n_components),
             comp.theta,
         )
-        freqs, power, _ = compute_periodogram(time, residual, oversampling_factor, normalization='psd')
+        freqs, power, _ = compute_periodogram(time, residual, oversampling_factor, normalization=normalization)
         ax_pg = axes[i, 0]
         ax_pg.plot(freqs, power, lw=0.5)
         ax_pg.axvline(comp.frequency, ls="--", c="r", lw=1, label=f"f={comp.frequency:.4f}")
@@ -133,7 +143,7 @@ def plot_prewhitening(
         ax_ph.set_title(f"P = {period:.4f} d")
         residual = residual - model
     # final residual
-    freqs, power, _ = compute_periodogram(time, residual, oversampling_factor, normalization='psd')
+    freqs, power, _ = compute_periodogram(time, residual, oversampling_factor, normalization=normalization)
     axes[-1, 0].plot(freqs, power, lw=0.5)
     axes[-1, 0].set_xlim(0, freq_xlim)
     axes[-1, 0].set_xlabel("Frequency [1/d]")

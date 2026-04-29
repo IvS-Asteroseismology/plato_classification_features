@@ -111,6 +111,32 @@ def peak_density(
         feats[f"ls_peak_density_{name}"] = (count / width).item()
     return feats
 
+SUBHARMONIC_LABELS = {
+    4: "quarter",
+    2: "half",
+}
+
+def compute_subharmonic_amplitude_ratios(
+    frequency: np.ndarray, power: np.ndarray, 
+    dominant: float, min_power_level: float, local_window: int = 10, local_elevation_factor: float = 1.5,
+) -> dict[str, float]:
+    dominant_power = np.interp(dominant, frequency, power)
+    features = {}
+    for divisor, label in SUBHARMONIC_LABELS.items():
+        sub_freq = dominant / divisor
+        sub_idx = np.argmin(np.abs(frequency - sub_freq))
+        sub_power = np.interp(sub_freq, frequency, power)
+        
+        lo = max(0, sub_idx - local_window)
+        hi = min(len(power) - 1, sub_idx + local_window)
+        local_median = np.median(power[lo:hi + 1])
+        is_locally_elevated = sub_power > local_elevation_factor * local_median
+
+        features[f"ls_amplitude_ratio_{label}_dominant"] = (sub_power / dominant_power).item()
+        features[f"ls_amplitude_is_significant_{label}_dominant"] = sub_power > min_power_level
+        features[f"ls_is_local_max_{label}_dominant"] = bool(is_locally_elevated)
+    return features
+
 def periodogram_features(
     time: np.ndarray, flux: np.ndarray,
     oversampling_factor: float = 10.,
@@ -123,19 +149,20 @@ def periodogram_features(
     for idx in peak_idx:
         freqs[idx], power[idx] = fine_tune_peak(time, flux, freqs[idx], fmin, fmax, fres, finetune_factor)
     dominant_idx = peak_idx[np.argmax(power[peak_idx])]
-    power_dominant = power[dominant_idx]
+    freq_dominant, power_dominant = freqs[dominant_idx], power[dominant_idx], 
     fap_dominant = baluev_false_alarm_probability(power_dominant, time, flux, fmin, fmax, oversampling_factor)
     eps = np.finfo(float).tiny
-    fap_clipped = eps if fap_dominant < eps else fap_dominant   
-    half_dominant_idx = np.argmin(np.abs(freqs - freqs[dominant_idx]/2))
+    fap_clipped = eps if fap_dominant < eps else fap_dominant
+    minimum_peak_power = baluev_fap_level(peak_density_maximum_fap, time, flux, fmin, fmax, oversampling_factor)
     features = {
-        'ls_frequency_dominant': freqs[dominant_idx].item(), 
+        'ls_frequency_dominant': freq_dominant.item(), 
         'ls_amplitude_dominant': power_dominant.item(),
+        'ls_amplitude_is_significant_dominant': power_dominant > minimum_peak_power,
         'ls_fap_dominant': fap_clipped.item(),
-        'ls_amplitude_ratio_half_dominant': (power[half_dominant_idx]/power_dominant).item(),
         'ls_entropy': spectral_entropy(power).item(),
         'ls_flatness': spectral_flatness(power).item(),
     }
     minimum_peak_power = baluev_fap_level(peak_density_maximum_fap, time, flux, fmin, fmax, oversampling_factor)
+    features.update(compute_subharmonic_amplitude_ratios(freqs, power, freq_dominant, minimum_peak_power))    
     features.update(peak_density(freqs, power, minimum_peak_power, fmin, fmax, oversampling_factor))
     return features
