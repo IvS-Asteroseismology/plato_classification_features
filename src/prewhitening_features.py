@@ -98,7 +98,6 @@ def prewhitening_features(
     n = len(components)
     variances = [c.variance_explained for c in components]
     total = sum(variances)
-
     feats["pw_total_variance_explained"] = total
     feats["pw_variance_ratio_1_to_total"] = variances[0] / total
     feats["pw_variance_ratio_2_1"] = variances[1] / variances[0] if variances[0] > 0 else np.nan
@@ -107,17 +106,20 @@ def prewhitening_features(
         feats[f"pw_frequency_{i + 1}"] = c.frequency
         amplitudes, phases = cartesian_to_polar(c.theta)
         feats[f"pw_{i + 1}_amplitude_1"] = amplitudes[0].item()
+        sum_ratio_sq = 0.0
         for j in range(1, len(amplitudes)):
-            feats[f"pw_{i + 1}_amplitude_ratio_{j + 1}_1"] = (amplitudes[j] / amplitudes[0]).item()
+            ratio = (amplitudes[j] / amplitudes[0]).item()
+            feats[f"pw_{i + 1}_amplitude_ratio_{j + 1}_1"] = ratio
             rel_phase = wrap_to_pi(phases[j] - (j + 1) * phases[0])
             feats[f"pw_{i + 1}_relative_phase_{j + 1}"] = rel_phase.item()
+            sum_ratio_sq += ratio ** 2
+        feats[f"pw_{i + 1}_harmonicity"] = 1.0 / (1.0 + sum_ratio_sq)
     for i in range(1, n):
         feats[f"pw_freq_ratio_{i + 1}_1"] = components[i].frequency / components[0].frequency
         feats[f"pw_amplitude_ratio_comp_{i + 1}_1"] = (
             cartesian_to_polar(components[i].theta)[0][0]
             / cartesian_to_polar(components[0].theta)[0][0]
         ).item()
-
     return feats
 
 def plot_prewhitening(
