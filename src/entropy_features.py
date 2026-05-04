@@ -78,6 +78,9 @@ def sample_entropy_fast(x: np.ndarray, m: int, r: float, valid_mask: np.ndarray 
         B = 1
     return float(-np.log(B / A)) if A > 0 else np.nan
 
+def robust_sigma(flux: np.ndarray) -> float:
+    return 1.4826 * np.median(np.abs(flux - np.median(flux)))
+    
 def mse_gap_aware(
     time: np.ndarray,
     flux: np.ndarray,
@@ -93,7 +96,7 @@ def mse_gap_aware(
     for scale in scales:
         time_cg, flux_cg, win_valid = coarse_grain_time(time, flux, scale, cadence, min_fill_fraction)
         if r is None:
-            r = tolerance_factor * np.std(flux_cg[win_valid])
+            r = tolerance_factor * robust_sigma(flux_cg[win_valid])
         template_valid = build_template_validity(win_valid, m)
         n_valid = template_valid.sum()
         if n_valid < min_templates:
