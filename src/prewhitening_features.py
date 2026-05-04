@@ -56,7 +56,7 @@ def prewhiten(
     time: np.ndarray, flux: np.ndarray, 
     num_components: int, num_iterations: int, ratio_threshold: float, 
     oversampling_factor: float, finetune_factor: float, peak_density_maximum_fap: float,
-    l2_reg: float = 0.0,
+    l2_reg: float = 1e-3,
 ) -> tuple[list[PrewhiteningComponent], list[dict[str, float]]]:    
     total_variance = np.var(flux)
     residual = flux.copy()    
