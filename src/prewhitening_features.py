@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import numpy as np
 from matplotlib import pyplot as plt
 
-from periodogram_features import periodogram_features, compute_periodogram, SUBHARMONIC_LABELS
+from periodogram_features import periodogram_features, compute_periodogram, baluev_fap_level, SUBHARMONIC_LABELS
 
 
 def fourier_design_matrix(
@@ -16,10 +16,24 @@ def fourier_design_matrix(
         + [np.sin(omegat * j) for j in k]
     )
 
-def fit_fourier_series(time: np.ndarray, flux: np.ndarray, frequency: float, num_components: int) -> tuple[np.ndarray, float]:
+def fit_fourier_series(
+    time: np.ndarray, 
+    flux: np.ndarray, 
+    frequency: float, 
+    num_components: int,
+    l2_reg: float = 0.0,
+) -> tuple[np.ndarray, float]:
     assert num_components>0, "At least one sinusoidal  component needed"
     X = fourier_design_matrix(time, frequency, num_components)
-    theta, sum_squared_residuals, _, _ = np.linalg.lstsq(X, flux, rcond=None)
+    if l2_reg > 0: # ridge regression with lstsq
+        n_cols = X.shape[1]
+        reg_mat = np.sqrt(l2_reg) * np.eye(n_cols)
+        reg_mat[0, 0] = 0.0  # don't regularize the mean
+        X = np.vstack([X, reg_mat])
+        flux = np.concatenate([flux, np.zeros(n_cols)])
+    theta, *_ = np.linalg.lstsq(X, flux, rcond=None)
+    residuals = flux[:len(time)] - X[:len(time)] @ theta
+    sum_squared_residuals = residuals @ residuals
     return theta, sum_squared_residuals
 
 def resolve_fundamental(periodogram_results: dict[str, float], ratio_threshold: float) -> float:
@@ -40,8 +54,9 @@ class PrewhiteningComponent:
 
 def prewhiten(
     time: np.ndarray, flux: np.ndarray, 
-    num_components: int, num_iterations: int, ratio_threshold: float,
+    num_components: int, num_iterations: int, ratio_threshold: float, 
     oversampling_factor: float, finetune_factor: float, peak_density_maximum_fap: float,
+    l2_reg: float = 0.0,
 ) -> tuple[list[PrewhiteningComponent], list[dict[str, float]]]:    
     total_variance = np.var(flux)
     residual = flux.copy()    
@@ -55,7 +70,7 @@ def prewhiten(
         )
         pfs.append(pf)
         freq = resolve_fundamental(pf, ratio_threshold) 
-        theta, _ = fit_fourier_series(time, residual, freq, num_components)
+        theta, _ = fit_fourier_series(time, residual, freq, num_components, l2_reg)
         variance_before = np.var(residual)
         residual = residual - np.dot(fourier_design_matrix(time, freq, num_components), theta)
         variance_after = np.var(residual)
@@ -113,6 +128,7 @@ def plot_prewhitening(
     freq_xlim: float = 5.0,
     oversampling_factor: float = 5.0,
     normalization='standard',
+    fap_level: float = 0.01,
 ) -> plt.Figure:
     n_iter = len(components)
     fig, axes = plt.subplots(n_iter + 1, 2, figsize=(14, 3 * (n_iter + 1)), constrained_layout=True)
@@ -127,11 +143,14 @@ def plot_prewhitening(
             fourier_design_matrix(phase_time / comp.frequency, comp.frequency, n_components),
             comp.theta,
         )
-        freqs, power, _ = compute_periodogram(time, residual, oversampling_factor, normalization=normalization)
+        freqs, power, (fmin, fmax, fres) = compute_periodogram(time, residual, oversampling_factor, normalization=normalization)
+        power_threshold = baluev_fap_level(fap_level, time, flux, fmin, fmax, oversampling_factor, normalization)
         ax_pg = axes[i, 0]
-        ax_pg.plot(freqs, power, lw=0.5)
-        ax_pg.axvline(comp.frequency, ls="--", c="r", lw=1, label=f"f={comp.frequency:.4f}")
-        ax_pg.set_xlim(0, freq_xlim)
+        mask = freqs < freq_xlim
+        ax_pg.plot(freqs[mask], power[mask], lw=0.5)
+        ax_pg.axhline(power_threshold, ls='--', c='r', lw=1, label=f"FAP={fap_level:.3f}")
+        ax_pg.axvline(comp.frequency, ls="--", c="g", lw=1, label=f"f={comp.frequency:.4f}")
+        #ax_pg.set_xlim(0, freq_xlim)
         ax_pg.set_ylabel("Power")
         ax_pg.set_title(f"Iteration {i + 1}: var explained = {comp.variance_explained:.2%}")
         ax_pg.legend(fontsize=8)
