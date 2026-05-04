@@ -76,7 +76,7 @@ class PreprocessingConfig:
     sigma_clip_upper: float = 5.0
     filter_short_segments: bool = True
     min_segment_duration: float = 1.0
-    gap_threshold_factor: float = 5.0
+    gap_threshold_factor: float = 10.0
     bin_extended_mission_cadence: bool = False
     detrend: bool = False
     detrend_sigma: float = 100
@@ -117,7 +117,7 @@ def preprocess_lc(
         if len(flux) == 0:
             raise ValueError("Light curve is empty after removing short segments.")
     if cfg.bin_extended_mission_cadence and sector is not None and sector >= 27 and len(flux) >= 3:
-        # Makes extended mission cadence similar to nominal mission
+        # Makes extended mission cadence similar to nominal mission, assumes regular sampling
         n = (len(flux) // 3) * 3
         time = time[:n].reshape(-1, 3).mean(axis=1)
         flux = flux[:n].reshape(-1, 3).mean(axis=1)
@@ -146,3 +146,4 @@ def detrend_light_curve(time: np.ndarray, flux: np.ndarray, smooth_sigma: float,
     detrended_flux = flux[:len(smoothed)] - smoothed
     detrended_time = time[:len(detrended_flux)]
     return detrended_time, detrended_flux + np.mean(flux)
+
