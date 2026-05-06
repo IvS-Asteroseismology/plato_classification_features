@@ -1,7 +1,8 @@
 from dataclasses import dataclass
+from functools import partial
 import numpy as np
 
-from time_domain_features import flux_statistics, max_slope
+from time_domain_features import flux_statistics, time_flux_statistics
 from autocorrelation_features import autocorrelation_features
 from barbara_kepler_features import barbara_features
 from periodogram_features import periodogram_features
@@ -14,7 +15,8 @@ class FeatureExtractorConfig:
     # Periodogram config
     oversampling_factor: float = 5.0
     finetune_factor: float = 10.0
-    peak_max_fap_level: float = 0.01
+    peak_significance: float = 0.01
+    peak_snr_threshold: float = 5
     # Autocorrelation config
     max_lag_days: float = 27.4/5
     # Multi scale ntropy config
@@ -33,16 +35,21 @@ def extract_features(
     # NOTE: This assumes that time and flux have already been sanitized
     feats = {}
     feats.update(flux_statistics(flux))
-    feats.update(max_slope(time, flux))
+    feats.update(time_flux_statistics(time, flux))
     feats.update(autocorrelation_features(time, flux, cfg.max_lag_days))
     # feats.update(barbara_features(time, flux))
     feats.update(entropy_features(time, flux, sector, cfg.m, cfg.tolerance_factor))
-    prewhitening_result, periodogram_features = prewhiten(
-        time, flux,
-        num_components=cfg.num_harmonics, num_iterations=cfg.num_prewithening_iterations, ratio_threshold=cfg.half_frequency_detection_threshold,
-        oversampling_factor=cfg.oversampling_factor, finetune_factor=cfg.finetune_factor, peak_density_maximum_fap=cfg.peak_max_fap_level,
-        l2_reg=cfg.l2_regularization,
+    # Configure the feature extractor and pass it to the prewhitening routine
+    periodogram_feature_extractor = partial(
+        periodogram_features, 
+        oversampling_factor=cfg.oversampling_factor, finetune_factor=cfg.finetune_factor, 
+        peak_significance=cfg.peak_significance, peak_snr_threshold=cfg.peak_snr_threshold,
     )
-    feats.update(periodogram_features[0]) # The full periodogram features of the first component
+    prewhitening_result, per_features = prewhiten(
+        time, flux, periodogram_feature_extractor,
+        num_components=cfg.num_harmonics, num_iterations=cfg.num_prewithening_iterations, 
+        ratio_threshold=cfg.half_frequency_detection_threshold, l2_reg=cfg.l2_regularization,
+    )
+    feats.update(per_features[0]) # The full periodogram features of the first component
     feats.update(prewhitening_features(prewhitening_result))
     return feats

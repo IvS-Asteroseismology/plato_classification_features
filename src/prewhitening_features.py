@@ -1,8 +1,9 @@
+from typing import Callable
 from dataclasses import dataclass
 import numpy as np
 from matplotlib import pyplot as plt
 
-from periodogram_features import periodogram_features, compute_periodogram, baluev_fap_level, SUBHARMONIC_LABELS
+from periodogram_features import compute_periodogram, baluev_fap_level, SUBHARMONIC_LABELS
 
 
 def fourier_design_matrix(
@@ -53,21 +54,14 @@ class PrewhiteningComponent:
     variance_explained: float
 
 def prewhiten(
-    time: np.ndarray, flux: np.ndarray, 
-    num_components: int, num_iterations: int, ratio_threshold: float, 
-    oversampling_factor: float, finetune_factor: float, peak_density_maximum_fap: float,
-    l2_reg: float = 1e-3,
+    time: np.ndarray, flux: np.ndarray, periodogram_feature_extractor: Callable,
+    num_components: int, num_iterations: int, ratio_threshold: float, l2_reg: float = 1e-3,
 ) -> tuple[list[PrewhiteningComponent], list[dict[str, float]]]:    
     total_variance = np.var(flux)
     residual = flux.copy()    
     components, pfs = [], []
     for _ in range(num_iterations):
-        pf = periodogram_features(
-                time, residual, 
-                oversampling_factor=oversampling_factor,
-                finetune_factor=finetune_factor, 
-                peak_density_maximum_fap=peak_density_maximum_fap,
-        )
+        pf = periodogram_feature_extractor(time, residual)
         pfs.append(pf)
         freq = resolve_fundamental(pf, ratio_threshold) 
         theta, _ = fit_fourier_series(time, residual, freq, num_components, l2_reg)
@@ -106,14 +100,30 @@ def prewhitening_features(
         feats[f"pw_frequency_{i + 1}"] = c.frequency
         amplitudes, phases = cartesian_to_polar(c.theta)
         feats[f"pw_{i + 1}_amplitude_1"] = amplitudes[0].item()
+        # Features from amplitude and phases:
         sum_ratio_sq = 0.0
+        weighted_h = 0.0
+        even_power = 0.0
+        odd_power = 0.0
+        weighted_sin2 = 0.0
         for j in range(1, len(amplitudes)):
+            h = j + 1
             ratio = (amplitudes[j] / amplitudes[0]).item()
-            feats[f"pw_{i + 1}_amplitude_ratio_{j + 1}_1"] = ratio
-            rel_phase = wrap_to_pi(phases[j] - (j + 1) * phases[0])
-            feats[f"pw_{i + 1}_relative_phase_{j + 1}"] = rel_phase.item()
-            sum_ratio_sq += ratio ** 2
+            feats[f"pw_{i + 1}_amplitude_ratio_{h}_1"] = ratio
+            rel_phase = wrap_to_pi(phases[j] - h * phases[0])
+            feats[f"pw_{i + 1}_relative_phase_{h}"] = rel_phase.item()
+            r2 = ratio ** 2
+            sum_ratio_sq += r2
+            weighted_h += h * r2
+            weighted_sin2 += r2 * np.sin(rel_phase.item()) ** 2
+            if h % 2 == 0:
+                even_power += r2
+            else:
+                odd_power += r2
         feats[f"pw_{i + 1}_harmonicity"] = 1.0 / (1.0 + sum_ratio_sq)
+        feats[f"pw_{i + 1}_spectral_centroid"] = (1.0 + weighted_h) / (1.0 + sum_ratio_sq)
+        feats[f"pw_{i + 1}_even_odd_ratio"] = even_power / (1.0 + odd_power)
+        feats[f"pw_{i + 1}_phase_asymmetry"] = (weighted_sin2 / sum_ratio_sq).item()
     for i in range(1, n):
         feats[f"pw_freq_ratio_{i + 1}_1"] = components[i].frequency / components[0].frequency
         feats[f"pw_amplitude_ratio_comp_{i + 1}_1"] = (

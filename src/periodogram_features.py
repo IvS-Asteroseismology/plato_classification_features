@@ -96,20 +96,26 @@ def spectral_flatness(power: np.ndarray, eps: float = 1e-12) -> float:
 
 def peak_density(
     freqs: np.ndarray, power: np.ndarray,
-    minimum_peak_power: float,
-    fmin: float,  fmax: float, 
+    snr_threshold: float,
+    fmin: float, fmax: float,
     oversampling_factor: float,
 ) -> dict[str, float]:
     peak_idx = find_top_k_peaks(power, k=len(power), w=int(2 * oversampling_factor))
-    peak_freqs = freqs[peak_idx[power[peak_idx] >= minimum_peak_power]]
     edges = [fmin, 1.5, 5.0, fmax]
     names = ["low", "mid", "high"]
     feats = {}
     for name, lo, hi in zip(names, edges[:-1], edges[1:]):
-        width = hi - lo
-        count = np.sum((peak_freqs >= lo) & (peak_freqs < hi))
-        feats[f"ls_peak_density_{name}"] = (count / width).item()
+        band = (freqs >= lo) & (freqs < hi)
+        if band.sum() == 0:
+            feats[f"ls_peak_density_{name}"] = 0.0
+            continue
+        local_median = np.median(power[band])
+        in_band = (peak_idx,)  # filter peaks into this band
+        band_peaks = peak_idx[(freqs[peak_idx] >= lo) & (freqs[peak_idx] < hi)]
+        count = np.sum(power[band_peaks] >= snr_threshold * local_median)
+        feats[f"ls_peak_density_{name}"] = (count / (hi - lo)).item()
     return feats
+
 
 SUBHARMONIC_LABELS = {
     4: "quarter",
@@ -141,7 +147,8 @@ def periodogram_features(
     time: np.ndarray, flux: np.ndarray,
     oversampling_factor: float = 10.,
     finetune_factor: float = 10.,
-    peak_density_maximum_fap: float = 0.01,
+    peak_significance: float = 0.01,
+    peak_snr_threshold: float = 5.
 ) -> dict[str, float]:
     freqs, power, (fmin, fmax, fres) = compute_periodogram(time, flux, oversampling_factor)
     # Fine tune ten highest peaks
@@ -153,7 +160,7 @@ def periodogram_features(
     fap_dominant = baluev_false_alarm_probability(power_dominant, time, flux, fmin, fmax, oversampling_factor)
     eps = np.finfo(float).tiny
     fap_clipped = eps if fap_dominant < eps else fap_dominant
-    minimum_peak_power = baluev_fap_level(peak_density_maximum_fap, time, flux, fmin, fmax, oversampling_factor)
+    minimum_peak_power = baluev_fap_level(peak_significance, time, flux, fmin, fmax, oversampling_factor)
     features = {
         'ls_frequency_dominant': freq_dominant.item(), 
         'ls_amplitude_dominant': power_dominant.item(),
@@ -162,7 +169,6 @@ def periodogram_features(
         'ls_entropy': spectral_entropy(power).item(),
         'ls_flatness': spectral_flatness(power).item(),
     }
-    minimum_peak_power = baluev_fap_level(peak_density_maximum_fap, time, flux, fmin, fmax, oversampling_factor)
     features.update(compute_subharmonic_amplitude_ratios(freqs, power, freq_dominant, minimum_peak_power))    
-    features.update(peak_density(freqs, power, minimum_peak_power, fmin, fmax, oversampling_factor))
+    features.update(peak_density(freqs, power, peak_snr_threshold, fmin, 24., oversampling_factor))
     return features
