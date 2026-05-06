@@ -5,14 +5,16 @@ def acf_gapped(
     time: np.ndarray,
     flux: np.ndarray,
     max_lag_days: float,
+    reference_cadence: float = 0.02084,  # 30m
     center: str = "median",
     scale: str = "mad",
     min_pair_frac: float = 0.05,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-    # Uniform grid with guard against duplicates
-    dt = np.median(np.diff(time))
+    native_dt = np.median(np.diff(time))
+    dt = max(native_dt, reference_cadence)
+
     n_grid = int(np.round((time[-1] - time[0]) / dt)) + 1
-    idx = np.round((time - time[0]) / dt).astype(int) 
+    idx = np.round((time - time[0]) / dt).astype(int)
     idx = np.clip(idx, 0, n_grid - 1)
  
     f = np.zeros(n_grid, dtype=np.float64)
