@@ -1,6 +1,8 @@
-# PLATO classification using features
+# PLATO LOPS2 classification using features
 
-A simple library to extract time and frequency domain features from preprocessed TESS light curves meant to be run in the IvS Pleaids cluster.
+A simple library to extract time and frequency domain features from preprocessed TESS light curves meant to be run in the IvS Pleaids cluster. The classification results obtained from the feature-based ML classifier are part of [(Kliapets et al. 2026)](https://arxiv.org/abs/2604.12758).
+
+To download the LOPS2 variability classification catalogue please see: https://rdr.kuleuven.be/dataset.xhtml?persistentId=doi:10.48804/GENZHD
 
 Dependencies are managed with [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
